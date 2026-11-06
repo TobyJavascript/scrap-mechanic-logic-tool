@@ -1,0 +1,25 @@
+{
+	"toolList": [
+		{
+			"name": "TobyWand",
+			"previewRenderable": "$CONTENT_DATA/Objects/Renderable/logictool_char.rend",
+			"previewRotation": [
+				1,
+				0,
+				0,
+				0,
+				0,
+				-1,
+				0,
+				1,
+				0
+			],
+			"script": {
+				"class": "LogicTool",
+				"data": {},
+				"file": "$CONTENT_DATA/Scripts/LogicTool.lua"
+			},
+			"uuid": "5b1e6c2a-8d4f-4b7e-9c3a-1f2e7d6a4c01"
+		}
+	]
+}

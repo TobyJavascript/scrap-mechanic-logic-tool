@@ -1,0 +1,15 @@
+{
+	"TobyWand-Hover" :
+	{
+		"effectList" :
+		[
+			{
+				"type" : "shapeRenderable",
+				"visualization" : true,
+				"valid" : true,
+				"visualizationColor" : "Builder Guide Silhouette",
+				"visualizationLayer" : "Top"
+			}
+		]
+	}
+}

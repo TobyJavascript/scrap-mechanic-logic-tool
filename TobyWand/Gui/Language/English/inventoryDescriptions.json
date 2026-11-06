@@ -1,0 +1,32 @@
+{
+	"5b1e6c2a-8d4f-4b7e-9c3a-1f2e7d6a4c01": {
+		"title": "TobyWand",
+		"description": "Select logic parts into groups A/B/C and wire them many at a time. Press R for the menu: multi-connect, scripts, timing and checks.",
+		"keywords": [
+			"logic",
+			"connect",
+			"wire",
+			"tool"
+		]
+	},
+	"5b1e6c2a-8d4f-4b7e-9c3a-1f2e7d6a4c02": {
+		"title": "TobyWand line",
+		"description": "Used by TobyWand to draw lines.",
+		"keywords": []
+	},
+	"5b1e6c2a-8d4f-4b7e-9c3a-1f2e7d6a4c03": {
+		"title": "TobyWand wire",
+		"description": "Used by TobyWand to draw wires.",
+		"keywords": []
+	},
+	"5b1e6c2a-8d4f-4b7e-9c3a-1f2e7d6a4c04": {
+		"title": "TobyWand arrow",
+		"description": "Used by TobyWand to draw wire directions.",
+		"keywords": []
+	},
+	"5b1e6c2a-8d4f-4b7e-9c3a-1f2e7d6a4c05": {
+		"title": "TobyWand frame",
+		"description": "Used by TobyWand to show selected parts.",
+		"keywords": []
+	}
+}

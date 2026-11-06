@@ -1,0 +1,56 @@
+{
+	"partList": [
+		{
+			"uuid": "5b1e6c2a-8d4f-4b7e-9c3a-1f2e7d6a4c02",
+			"name": "logictool_line",
+			"box": {
+				"x": 1,
+				"y": 1,
+				"z": 1
+			},
+			"renderable": "$CONTENT_DATA/Objects/Renderable/logictool_line.rend",
+			"physicsMaterial": "Default",
+			"rotationSet": "Default",
+			"showInInventory": false
+		},
+		{
+			"uuid": "5b1e6c2a-8d4f-4b7e-9c3a-1f2e7d6a4c03",
+			"name": "logictool_wire",
+			"box": {
+				"x": 1,
+				"y": 1,
+				"z": 1
+			},
+			"renderable": "$CONTENT_DATA/Objects/Renderable/logictool_wire.rend",
+			"physicsMaterial": "Default",
+			"rotationSet": "Default",
+			"showInInventory": false
+		},
+		{
+			"uuid": "5b1e6c2a-8d4f-4b7e-9c3a-1f2e7d6a4c04",
+			"name": "logictool_arrow",
+			"box": {
+				"x": 1,
+				"y": 1,
+				"z": 1
+			},
+			"renderable": "$CONTENT_DATA/Objects/Renderable/logictool_arrow.rend",
+			"physicsMaterial": "Default",
+			"rotationSet": "Default",
+			"showInInventory": false
+		},
+		{
+			"uuid": "5b1e6c2a-8d4f-4b7e-9c3a-1f2e7d6a4c05",
+			"name": "logictool_frame",
+			"box": {
+				"x": 1,
+				"y": 1,
+				"z": 1
+			},
+			"renderable": "$CONTENT_DATA/Objects/Renderable/logictool_frame.rend",
+			"physicsMaterial": "Default",
+			"rotationSet": "Default",
+			"showInInventory": false
+		}
+	]
+}

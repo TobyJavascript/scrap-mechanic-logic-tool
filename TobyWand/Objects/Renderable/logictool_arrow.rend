@@ -1,0 +1,17 @@
+{
+	"lodList": [
+		{
+			"mesh": "$CONTENT_DATA/Objects/Mesh/logictool_arrow.obj",
+			"subMeshList": [
+				{
+					"material": "ConnectJoint",
+					"textureList": [
+						"",
+						"",
+						""
+					]
+				}
+			]
+		}
+	]
+}
