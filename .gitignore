@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Scrap Mechanic writes this next to an installed mod
+Cache/
+
+# Scratch files
+Pasted image*.png
