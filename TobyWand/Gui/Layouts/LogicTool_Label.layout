@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MyGUI type="Layout" version="3.2.0">
+    <Widget type="Widget" skin="PanelEmpty" position_real="0.0000 0.0000 1.0000 1.0000" name="Root">
+        <Property key="NeedMouse" value="false"/>
+        <Property key="NeedKey" value="false"/>
+        <Widget type="TextBox" skin="TextBox" position_real="0.0000 0.0000 1.0000 1.0000" name="Text">
+            <Property key="Caption" value=""/>
+            <Property key="TextAlign" value="Center"/>
+            <Property key="FontName" value="SM_TextLabel"/>
+            <Property key="TextColour" value="1 1 1"/>
+            <Property key="TextShadow" value="true"/>
+            <Property key="TextShadowColour" value="0 0 0"/>
+            <Property key="NeedMouse" value="false"/>
+            <Property key="NeedKey" value="false"/>
+        </Widget>
+    </Widget>
+    <CodeGeneratorSettings/>
+</MyGUI>
