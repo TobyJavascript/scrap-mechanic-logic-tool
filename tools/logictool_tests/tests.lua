@@ -414,5 +414,253 @@ do
 	check("probe timer", p[1].id == "t" and p[1].min == 7 and p[2].min == 8)
 end
 
+---------------------------------------------------------------------------
+-- LogicModule
+---------------------------------------------------------------------------
+
+do
+	-- half adder between inputs a, b and outputs s, c; x is an outside part
+	-- that also feeds s, and s also drives a lamp outside B
+	local g = mkgraph({
+		nodes = {
+			a = { kind = "input" }, b = { kind = "input" }, x = { kind = "input" },
+			n1 = { kind = "gate", mode = 2 }, n2 = { kind = "gate", mode = 0 },
+			s = { kind = "gate", mode = 1 }, c = { kind = "gate", mode = 1 }, lamp = { kind = "output" },
+		},
+		edges = { { "a", "n1" }, { "b", "n1" }, { "a", "n2" }, { "b", "n2" },
+			{ "n1", "s" }, { "n2", "c" }, { "x", "n1" }, { "n1", "lamp" } }
+	})
+	local ins = LogicModule.inside(g, { "a", "b" }, { "s", "c" })
+	check("module inside", table.concat(ins.parts, ",") == "n1,n2", table.concat(ins.parts, ","))
+	check("module extra in", table.concat(ins.extraIn, ",") == "x", table.concat(ins.extraIn, ","))
+	check("module extra out", table.concat(ins.extraOut, ",") == "n1", table.concat(ins.extraOut, ","))
+
+	local m = LogicModule.fromTruth(LogicGraph.truthTable(g, { "a", "b" }, { "s", "c" }), 2, 2)
+	-- A1 (a) is the low bit: row 1 = a on, row 2 = b on
+	local function outs(addr) return table.concat(m.rows[addr + 1].outs) end
+	check("module rows", outs(0) == "00" and outs(1) == "10" and outs(2) == "10" and outs(3) == "01",
+		outs(0) .. " " .. outs(1) .. " " .. outs(2) .. " " .. outs(3))
+	check("module names", table.concat(m.inputs, ",") == "A1,A2" and table.concat(m.outputs, ",") == "B1,B2")
+	check("address bits", table.concat(LogicModule.addressBits(m, 2)) == "01" and table.concat(LogicModule.addressBits(m, 1)) == "10")
+	local size = LogicModule.lutSize(m)
+	check("lut size", size.inverters == 2 and size.rows == 3 and size.outputs == 2 and size.total == 7, size.total)
+
+	local text, unsettled = LogicModule.tableText(m)
+	local lines = {}
+	for l in (text .. "\n"):gmatch("(.-)\n") do lines[#lines + 1] = l end
+	check("table header", lines[1]:find("^21   |   21") ~= nil, lines[1])
+	-- row 2 = A2 on; outputs B2 B1 = 0 1 (sum on, carry off)
+	check("table row", lines[4] == "10   |   01      2", lines[4])
+	check("table row 1", lines[3] == "01   |   01      1", lines[3])
+	check("table settled", unsettled == 0 and #lines == 5, #lines)
+	local coloured = LogicModule.tableText(m, { colors = { A = "ff9900", B = "00c8ff", one = "ffffff", zero = "707070", text = "ffffff" } })
+	check("table colours", coloured:find("#ff990021#ffffff", 1, true) ~= nil and coloured:find("#ffffff1#7070700", 1, true) ~= nil, coloured)
+end
+
+do
+	-- a loop inside (NOR latch fed back on itself) never settles from all-off? a lone NOT loop does
+	local g = mkgraph({
+		nodes = { a = { kind = "input" }, n = { kind = "gate", mode = 4 }, o = { kind = "gate", mode = 1 } },
+		edges = { { "a", "o" }, { "n", "n" }, { "n", "o" } }
+	})
+	local m = LogicModule.fromTruth(LogicGraph.truthTable(g, { "a" }, { "o" }, 50), 1, 1)
+	local _, unsettled = LogicModule.tableText(m)
+	check("unsettled rows counted", unsettled >= 1, unsettled)
+end
+
+do
+	-- parse the table back, with colour codes and edits
+	local m = { inputs = { "A1", "A2" }, outputs = { "B1", "B2" }, rows = {} }
+	for a = 1, 4 do m.rows[a] = { outs = { 0, 0 }, settled = true } end
+	local text = "#ff990012#ffffff   |   #00c8ff12#ffffff      row\n00   |   #ffffff10      0\n11 | 01  3\n\nnotes are fine"
+	local rows, info = LogicModule.parseTable(m, text)
+	-- outputs are written B2 B1: "10" is B2 on
+	check("parse rows", rows and table.concat(rows[1].outs) == "01" and table.concat(rows[4].outs) == "10"
+		and table.concat(rows[2].outs) == "00", rows and "" or info)
+	check("parse missing", info and info.listed == 2 and info.missing == 2)
+	local r, line, msg = LogicModule.parseTable(m, "00 | 1")
+	check("parse short output", r == nil and line == 1 and msg:find("2 output bit", 1, true), msg)
+	r, line, msg = LogicModule.parseTable(m, "x\n00 | 10\n00 | 11")
+	check("parse duplicate", r == nil and line == 3 and msg:find("twice", 1, true), msg)
+	r, line, msg = LogicModule.parseTable(m, "0a | 10")
+	check("parse junk", r == nil and line == 1, msg)
+
+	-- LUT plan for a half adder: B1 = XOR (rows 01, 10), B2 = AND (row 11)
+	m.rows = { { outs = { 0, 0 } }, { outs = { 1, 0 } }, { outs = { 1, 0 } }, { outs = { 0, 1 } } }
+	local plan = LogicModule.lutPlan(m, { bIsGate = { true, false } })
+	local c = plan.counts
+	check("plan counts", c.buffers == 2 and c.inverters == 2 and c.rows == 3 and c.ors == 1 and c.gates == 8,
+		c.buffers .. c.inverters .. c.rows .. c.ors)
+	check("plan ticks", plan.ticks == 3)
+	local wires = {}
+	for _, w in ipairs(plan.wires) do wires[w.from .. ">" .. w.to] = true end
+	check("plan row 1 = A1 and not A2", wires["buf1>row1"] and wires["inv2>row1"] and not wires["buf2>row1"])
+	check("plan row 11", wires["buf1>row3"] and wires["buf2>row3"])
+	check("plan B1 is the OR", plan.modes.B1 == LogicModule.MODE.OR and wires["row1>B1"] and wires["row2>B1"] and not wires["row3>B1"])
+	check("plan B2 gets an OR", plan.modes.B2 == nil and wires["row3>or2"] and wires["or2>B2"])
+	local moved = {}
+	for _, mv in ipairs(plan.moves) do moved[mv.ref] = mv end
+	check("plan A line", moved.A1.x == 0 and moved.A1.y == 0 and moved.A2.y == 1)
+	check("plan B column after the ORs", moved.B1.x == 4 and moved.B2.y == 1)
+
+	local fewer = LogicModule.lutPlan(m, { even = false, compress = true, bIsGate = { true, true } })
+	check("plan fewer gates", fewer.counts.gates == 5 and fewer.ticks == "2-3", fewer.counts.gates .. " " .. tostring(fewer.ticks))
+	local same = true
+	for _, p in ipairs(fewer.parts) do if p.y ~= 0 or p.z ~= 0 then same = false end end
+	check("plan stacked", same and fewer.columns == 2, fewer.columns)
+	check("plan text", LogicModule.planText(fewer, true) == "2 inverter(s) + 3 row AND(s) = 5 new gate(s), 2-3 ticks, stacked in 2 block(s)",
+		LogicModule.planText(fewer, true))
+
+	-- wrapping: 20 rows in one column go 16 high, then one layer up
+	local big = { inputs = {}, outputs = { "B1" }, rows = {} }
+	for k = 1, 5 do big.inputs[k] = "A" .. k end
+	for a = 1, 32 do big.rows[a] = { outs = { a <= 20 and 1 or 0 } } end
+	local bp = LogicModule.lutPlan(big, { bIsGate = { true } })
+	local maxY, maxZ = 0, 0
+	for _, p in ipairs(bp.parts) do
+		if p.x == 2 then maxY = math.max(maxY, p.y) maxZ = math.max(maxZ, p.z) end
+	end
+	check("plan wraps", bp.counts.rows == 20 and maxY == 15 and maxZ == 1, maxY .. " " .. maxZ)
+
+	-- nothing on: no rows, outputs just stay off
+	local off = { inputs = { "A1" }, outputs = { "B1" }, rows = { { outs = { 0 } }, { outs = { 0 } } } }
+	local op = LogicModule.lutPlan(off, { bIsGate = { true } })
+	check("plan empty", op.counts.gates == 0 and #op.wires == 0)
+end
+
+do
+	-- cells of rotated parts, bounds, placement
+	check("cell default", table.concat(LogicModule.cellOf({ pos = { x = 3, y = 4, z = 5 }, xaxis = 1, zaxis = 3 }), ",") == "3,4,5")
+	check("cell x backwards", table.concat(LogicModule.cellOf({ pos = { x = 3, y = 4, z = 5 }, xaxis = -1, zaxis = 3 }), ",") == "2,3,5",
+		table.concat(LogicModule.cellOf({ pos = { x = 3, y = 4, z = 5 }, xaxis = -1, zaxis = 3 }), ","))
+	check("cell block", table.concat(LogicModule.cellOf({ pos = { x = 1, y = 1, z = 1 }, bounds = { x = 4, y = 1, z = 1 } }), ",") == "1,1,1")
+	local body = { childs = {
+		{ pos = { x = 0, y = 0, z = 0 }, bounds = { x = 6, y = 3, z = 1 }, shapeId = "block" },
+		{ pos = { x = 2, y = 1, z = 1 }, xaxis = 1, zaxis = 3, shapeId = "x" },
+	} }
+	local lo, hi = LogicModule.bodyBounds(body)
+	check("bounds", table.concat(lo, ",") == "0,0,0" and table.concat(hi, ",") == "5,2,1", table.concat(hi, ","))
+	check("place on top", table.concat(LogicModule.placeOnTop(body), ",") == "0,0,2")
+
+	-- a blueprint: switches s1 s2 -> old XOR gate -> output gate o; the old gate also feeds lamp l (outside)?
+	-- no: o is B, x is the old logic, n feeds an outside lamp and must stay
+	local function gate(id, x, mode, wires)
+		local ctrl = { active = false, id = id, mode = mode }
+		if wires then ctrl.controllers = {} for _, w in ipairs(wires) do ctrl.controllers[#ctrl.controllers + 1] = { id = w } end end
+		return { pos = { x = x, y = 0, z = 0 }, xaxis = 1, zaxis = 3, shapeId = LogicModule.GATE_UUID, color = "222222", controller = ctrl }
+	end
+	local s1 = gate(1, 0, nil, { 3, 9 })
+	local s2 = gate(2, 1, nil, { 3 })
+	local x = gate(3, 2, 2, { 4 })
+	local o = gate(4, 3, 0, { 5 })
+	local after = gate(5, 4, 1)              -- outside, driven by B: keeps that wire
+	local other = gate(9, 5, 1)              -- outside, fed by s1: keeps that wire
+	local bp = { bodies = { { childs = {
+		{ pos = { x = 0, y = 0, z = 0 }, bounds = { x = 8, y = 1, z = 1 }, shapeId = "block" },
+		s1, s2, x, o, after, other } } }, joints = { { id = 40, controller = { id = 50 } } } }
+	local m = { inputs = { "A1", "A2" }, outputs = { "B1" }, rows = {
+		{ outs = { 0 } }, { outs = { 1 } }, { outs = { 1 } }, { outs = { 0 } } } }
+	local plan = LogicModule.lutPlan(m, { bIsGate = { true } })
+	local origin = LogicModule.placeOnTop(bp.bodies[1])
+	local childOf = LogicModule.applyLut(bp, plan, { body = 1, A = { s1, s2 }, B = { o }, remove = { [x] = true } }, origin)
+	local childs = bp.bodies[1].childs
+	local present = {}
+	for _, c in ipairs(childs) do if c.controller then present[c.controller.id] = c end end
+	check("old gate removed", present[3] == nil)
+	check("new gates added", #childs == 6 + plan.counts.gates, #childs)
+	local function wiresOf(c)
+		local t = {}
+		for _, w in ipairs(c.controller.controllers or {}) do t[#t + 1] = w.id end
+		table.sort(t)
+		return table.concat(t, ",")
+	end
+	check("A1 keeps its outside wire", wiresOf(s1):find("^9,") ~= nil, wiresOf(s1))
+	check("A1 feeds its buffer and inverter", wiresOf(s1) == "9," .. childOf.buf1.controller.id .. "," .. childOf.inv1.controller.id, wiresOf(s1))
+	check("B keeps its output wire", wiresOf(o) == "5", wiresOf(o))
+	check("B is OR", o.controller.mode == LogicModule.MODE.OR)
+	check("new ids above joints", childOf.buf1.controller.id == 51, childOf.buf1.controller.id)
+	-- row 1 = A1 on, A2 off: fed by A1's buffer and A2's inverter
+	check("row 1 wires", wiresOf(childOf.buf1):find(tostring(childOf.row1.controller.id), 1, true) ~= nil
+		and wiresOf(childOf.inv2):find(tostring(childOf.row1.controller.id), 1, true) ~= nil
+		and wiresOf(childOf.row1) == tostring(o.controller.id), wiresOf(childOf.row1))
+	-- the module runs along +Y (A, inputs, rows, B), each column along X
+	check("A moved into line on top", s1.pos.x == 0 and s1.pos.y == 0 and s1.pos.z == 1 and s2.pos.x == 1 and s2.pos.y == 0 and s2.pos.z == 1,
+		s2.pos.x .. "," .. s2.pos.y .. "," .. s2.pos.z)
+	check("B moved to its column", o.pos.x == 0 and o.pos.y == 3 and o.pos.z == 1, o.pos.x .. "," .. o.pos.y .. "," .. o.pos.z)
+	check("new gate placed", childOf.row1.pos.y == 2 and childOf.row1.pos.x == 0 and childOf.row1.pos.z == 1 and childOf.row1.shapeId == LogicModule.GATE_UUID)
+	check("unwired part has no empty list", childOf.row1.controller.controllers ~= nil and present[5].controller.controllers == nil)
+
+	-- new gates turned like B (a gate), landing exactly in their planned cells
+	local function turned(id, x, xa, za, wires)
+		local c = gate(id, x, 1, wires)
+		c.xaxis, c.zaxis = xa, za
+		c.pos = LogicModule.posFor({ x, 0, 0 }, xa, za)
+		return c
+	end
+	local t1, t2 = gate(11, 0, nil, {}), gate(12, 1, nil, {})
+	local tb = turned(14, 3, -2, -1)
+	local bp2 = { bodies = { { childs = { { pos = { x = 0, y = 0, z = -1 }, bounds = { x = 8, y = 1, z = 1 }, shapeId = "block" }, t1, t2, tb } } } }
+	local plan2 = LogicModule.lutPlan(m, { bIsGate = { true } })
+	local origin2 = LogicModule.placeOnTop(bp2.bodies[1])
+	local c2 = LogicModule.applyLut(bp2, plan2, { body = 1, A = { t1, t2 }, B = { tb }, remove = {} }, origin2)
+	local allTurned, allPlaced = true, true
+	for _, p in ipairs(plan2.parts) do
+		local child = c2[p.ref]
+		if child.xaxis ~= -2 or child.zaxis ~= -1 then allTurned = false end
+		local cell, want = LogicModule.cellOf(child), LogicModule.toBody(origin2, p.x, p.y, p.z)
+		if cell[1] ~= want[1] or cell[2] ~= want[2] or cell[3] ~= want[3] then allPlaced = false end
+	end
+	check("new gates turned like B", allTurned)
+	check("turned gates land in their cells", allPlaced)
+	check("B itself lands in its cell", table.concat(LogicModule.cellOf(tb), ",") == table.concat(LogicModule.toBody(origin2, 3, 0, 0), ","),
+		table.concat(LogicModule.cellOf(tb), ","))
+	-- every rotation round-trips
+	local roundTrip = true
+	for _, xa in ipairs({ 1, -1, 2, -2, 3, -3 }) do
+		for _, za in ipairs({ 1, -1, 2, -2, 3, -3 }) do
+			if math.abs(xa) ~= math.abs(za) then
+				local c = LogicModule.cellOf({ pos = LogicModule.posFor({ 5, 6, 7 }, xa, za), xaxis = xa, zaxis = za })
+				if c[1] ~= 5 or c[2] ~= 6 or c[3] ~= 7 then roundTrip = false end
+			end
+		end
+	end
+	check("posFor reverses cellOf for all 24 turns", roundTrip)
+
+	-- removable: inside parts that feed outside stay, with what feeds them
+	local g = mkgraph({
+		nodes = { a = { kind = "input" }, p = { kind = "gate", mode = 0 }, q = { kind = "gate", mode = 0 },
+			r = { kind = "gate", mode = 0 }, b = { kind = "gate", mode = 1 }, lamp = { kind = "output" } },
+		edges = { { "a", "p" }, { "p", "q" }, { "q", "b" }, { "a", "r" }, { "r", "b" }, { "q", "lamp" } }
+	})
+	local ins = LogicModule.inside(g, { "a" }, { "b" })
+	local rem = LogicModule.removable(g, ins, { "b" })
+	check("removable", table.concat(rem, ",") == "r", table.concat(rem, ","))
+end
+
+do
+	-- the built LUT does what the table says: wire up a graph from a plan and
+	-- simulate it. 3 inputs; only row 1 (A1 alone) and row 6 (A2 + A3) turn B1 on,
+	-- and row 4 (A3 alone) turns B2 on.
+	local m = { inputs = { "A1", "A2", "A3" }, outputs = { "B1", "B2" }, rows = {} }
+	for a = 0, 7 do m.rows[a + 1] = { outs = { (a == 1 or a == 6) and 1 or 0, a == 4 and 1 or 0 } } end
+	for _, even in ipairs({ true, false }) do
+		local plan = LogicModule.lutPlan(m, { even = even, bIsGate = { true, true } })
+		local nodes = { A1 = { kind = "input" }, A2 = { kind = "input" }, A3 = { kind = "input" },
+			B1 = { kind = "gate", mode = plan.modes.B1 }, B2 = { kind = "gate", mode = plan.modes.B2 } }
+		for _, p in ipairs(plan.parts) do nodes[p.ref] = { kind = "gate", mode = p.mode } end
+		local edges = {}
+		for _, w in ipairs(plan.wires) do edges[#edges + 1] = { w.from, w.to } end
+		local g = mkgraph({ nodes = nodes, edges = edges })
+		local rows = LogicGraph.truthTable(g, { "A1", "A2", "A3" }, { "B1", "B2" })
+		local built = LogicModule.fromTruth(rows, 3, 2)
+		check("built LUT matches its table (even=" .. tostring(even) .. ")", LogicModule.sameRows(built.rows, m.rows))
+		local only1 = rows[2] -- truthTable row 2 = A1 on only
+		check("A1 alone turns B1 on (even=" .. tostring(even) .. ")", only1.ins[1] and not only1.ins[2] and only1.outs[1] and not only1.outs[2])
+	end
+	local text = LogicModule.tableText(m)
+	check("row 1 shows as 001", text:find("\n001   |   01      1", 1, true) ~= nil, text)
+	check("row 4 shows as 100", text:find("\n100   |   10      4", 1, true) ~= nil, text)
+end
+
 print(string.format("%d passed, %d failed", passed, failures))
 return failures

@@ -20,6 +20,13 @@ creations faster.
   - loop detection, and glitch risks (a gate whose inputs arrive on different ticks);
   - truth tables;
   - a delay probe that numbers every gate after (or before) a part.
+- **Modules and LUTs**: load the logic between A (inputs) and B (outputs) as
+  a table in the module window. Edit the outputs, and **Build LUT** rebuilds
+  that logic as a clean lookup table: A in a line, inverters, one AND per row,
+  B as the ORs. You see a ghost preview first; afterwards the tool reloads the
+  module and checks it against your table. Undo build puts the creation back.
+  Settings choose stacked or spread-out gates, and even 3-tick timing (no
+  glitches) or fewer gates.
 - **Lua scripting**: a built-in editor with syntax highlighting, formatting and
   examples. Groups are Lua lists of parts, so wiring a decoder or a shift
   register takes a few lines:
@@ -40,6 +47,7 @@ creations faster.
 | `TobyWand/Scripts/LogicTool.lua` | The tool: input, selection, wiring, GUI |
 | `TobyWand/Scripts/LogicGraph.lua` | Logic graph analysis: timing, loops, truth tables, delay probe |
 | `TobyWand/Scripts/LogicScript.lua` | Lua interpreter, scripting API, highlighter and formatter |
+| `TobyWand/Scripts/LogicModule.lua` | Modules: truth table, editing, LUT plan, blueprint rebuild |
 | `tools/` | Python generators for the meshes, texture, icon and GUI layouts |
 | `tools/logictool_tests/` | Offline tests, run in LuaJIT through lupa |
 

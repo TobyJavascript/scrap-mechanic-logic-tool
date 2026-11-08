@@ -15,6 +15,7 @@ dofile("$SURVIVAL_DATA/Scripts/util.lua")            -- clamp() etc., needed by 
 dofile("$GAME_DATA/Scripts/game/AnimationUtil.lua")
 dofile("$CONTENT_DATA/Scripts/LogicScript.lua")
 dofile("$CONTENT_DATA/Scripts/LogicGraph.lua")
+dofile("$CONTENT_DATA/Scripts/LogicModule.lua")
 
 LogicTool = class()
 
@@ -71,6 +72,12 @@ local MAX_LINES = 400
 local MAX_GROUP = 2048
 local OPS_PER_PACKET = 300
 local NET_LIST_LIMIT = 400
+local MODULE_MAX_OUTPUTS = 32
+-- buttons that open a window on the left (one at a time)
+local LEFT_WINDOWS = { openScript = "script", openSettings = "settings", openModule = "module" }
+local MODULE_HINT = "Put the inputs in A and the outputs in B (in order), then press Load.\n\n"
+	.. "The tool reads the logic between them and shows it as a table: every input combination "
+	.. "and what the outputs do. Edit the outputs, then Build LUT rebuilds that logic as a clean LUT."
 local MAX_GRAPH_NODES = 20000
 local PROBE_NET_LIMIT = 1500   -- probe results sent to the client
 local MAX_LABELS = 200         -- world labels shown at once (nearest first)
@@ -190,7 +197,7 @@ end
 ---------------------------------------------------------------------------
 
 function LogicTool:server_onCreate()
-	self.sv = { undo = {}, pending = {} }
+	self.sv = { undo = {}, pending = {}, lutUndo = {} }
 end
 
 -- Apply a chunk of connect/cut/clear operations from a client.
@@ -425,6 +432,26 @@ function LogicTool:sv_buildGraph(seeds)
 	return graph, inters, labels, { mapped = mapped, unmapped = unmapped, tooBig = tooBig }
 end
 
+-- true when every part in the lists is on one creation (bodies joined by
+-- bearings/pistons count as one creation, like the game's lift)
+local function sameCreation(lists)
+	local bodies
+	for _, list in ipairs(lists) do
+		for _, inter in ipairs(list or {}) do
+			local shape = sm.exists(inter) and inter:getShape()
+			if shape and sm.exists(shape) then
+				if not bodies then
+					bodies = {}
+					for _, b in ipairs(shape.body:getCreationBodies()) do bodies[b.id] = true end
+				elseif not bodies[shape.body.id] then
+					return false
+				end
+			end
+		end
+	end
+	return true
+end
+
 local function idsOf(list)
 	local ids = {}
 	for _, inter in ipairs(list or {}) do
@@ -440,6 +467,252 @@ local function limitedInters(ids, inters, limit)
 		if inters[id] then out[#out + 1] = inters[id] end
 	end
 	return out
+end
+
+-- Load A (inputs) > B (outputs) as a module: its truth table, what is
+-- inside, and where it leaks. Returns module, error, leak parts.
+function LogicTool:sv_loadModule(graph, inters, labels, data, A, B)
+	if #A == 0 or #B == 0 then
+		return nil, "Load needs the inputs in A and the outputs in B"
+	end
+	if #A > LogicModule.MAX_INPUTS then
+		return nil, string.format("A has %d inputs; a module can have at most %d", #A, LogicModule.MAX_INPUTS)
+	end
+	if #B > MODULE_MAX_OUTPUTS then
+		return nil, string.format("B has %d outputs; a module can have at most %d", #B, MODULE_MAX_OUTPUTS)
+	end
+	local inA = {}
+	for _, id in ipairs(A) do inA[id] = true end
+	for _, id in ipairs(B) do
+		if inA[id] then return nil, "A part can't be in both A (inputs) and B (outputs)" end
+	end
+	if not sameCreation({ data.A, data.B }) then
+		return nil, "A and B must be on the same creation"
+	end
+
+	local rows, err = LogicGraph.truthTable(graph, A, B, 4000)
+	if not rows then return nil, err end
+	local m = LogicModule.fromTruth(rows, #A, #B)
+	local inside = LogicModule.inside(graph, A, B)
+	m.inside = #inside.parts
+	m.extraIn = #inside.extraIn
+	m.extraOut = #inside.extraOut
+	m.inputTypes, m.outputTypes = {}, {}
+	for k, id in ipairs(A) do m.inputTypes[k] = labels[id] or "?" end
+	for k, id in ipairs(B) do m.outputTypes[k] = labels[id] or "?" end
+	-- a gate B can become the LUT's OR itself; others need an OR in front
+	m.outputGates = {}
+	for k, id in ipairs(B) do m.outputGates[k] = graph[id] ~= nil and graph[id].kind == "gate" end
+	return m, nil, limitedInters(inside.extraIn, inters, NET_LIST_LIMIT)
+end
+
+---------------------------------------------------------------------------
+-- SERVER: build a module as a LUT (rebuilds the creation from its blueprint,
+-- the same way Bingo's block editor does)
+---------------------------------------------------------------------------
+
+-- Blueprint child of every part on the creation of `body`, as
+-- { [interactable id] = child }. Same matching as readControllers.
+local function blueprintChilds(body, bp)
+	local ordered = { body }
+	for _, b in ipairs(body:getCreationBodies()) do
+		if b.id ~= body.id then ordered[#ordered + 1] = b end
+	end
+	local byCtrlId = {}
+	for _, bpBody in ipairs(bp.bodies or {}) do
+		for _, child in ipairs(bpBody.childs or {}) do
+			if child.controller and child.controller.id then byCtrlId[child.controller.id] = child end
+		end
+	end
+	local out = {}
+	for bi, b in ipairs(ordered) do
+		local childs = bp.bodies[bi] and bp.bodies[bi].childs or {}
+		for si, shape in ipairs(b:getShapes()) do
+			local inter = shape.interactable
+			if inter then
+				local uuid = tostring(shape.uuid)
+				local child = childs[si]
+				if not (child and child.shapeId == uuid and child.controller) then
+					child = byCtrlId[inter.id]
+					if child and child.shapeId ~= uuid then child = nil end
+				end
+				out[inter.id] = child
+			end
+		end
+	end
+	return out
+end
+
+-- Works out the whole build without changing anything. Returns a context
+-- table, or nil and an error for the player.
+function LogicTool:sv_lutPrepare(data)
+	local Ain, Bin = {}, {}
+	for _, i in ipairs(data.A or {}) do if sm.exists(i) then Ain[#Ain + 1] = i end end
+	for _, i in ipairs(data.B or {}) do if sm.exists(i) then Bin[#Bin + 1] = i end end
+	local rows = data.rows or {}
+	if #Ain == 0 or #Bin == 0 then return nil, "Build needs the inputs in A and the outputs in B" end
+	if #Ain > LogicModule.MAX_INPUTS then return nil, "Too many inputs in A" end
+	if #rows ~= 2 ^ #Ain or #(rows[1] or {}) ~= #Bin then
+		return nil, "A or B changed since Load: press Load A > B again"
+	end
+	local home = Ain[1]:getShape().body
+	for _, list in ipairs({ Ain, Bin }) do
+		for _, inter in ipairs(list) do
+			if inter:getShape().body.id ~= home.id then
+				return nil, "For Build, all of A and B must be on one body (not split by bearings or pistons)"
+			end
+		end
+	end
+
+	local graph, inters = self:sv_buildGraph(Ain)
+	local A, B = idsOf(Ain), idsOf(Bin)
+	local inside = LogicModule.inside(graph, A, B)
+	local removeIds = LogicModule.removable(graph, inside, B)
+	local removeSet = {}
+	for _, id in ipairs(removeIds) do removeSet[id] = true end
+
+	local lifted = home:isOnLift()
+	local okExp, bp = pcall(sm.creation.exportToTable, home, true, lifted)
+	if not (okExp and type(bp) == "table" and bp.bodies) then return nil, "Couldn't read the creation's blueprint" end
+	local okOld, oldBp = pcall(sm.creation.exportToTable, home, true, lifted)
+	if not okOld then return nil, "Couldn't read the creation's blueprint" end
+
+	local childs = blueprintChilds(home, bp)
+	local refs = { body = 1, A = {}, B = {}, remove = {} }
+	for k, id in ipairs(A) do refs.A[k] = childs[id] end
+	for k, id in ipairs(B) do refs.B[k] = childs[id] end
+	for k = 1, #A do if not refs.A[k] then return nil, "Couldn't find A" .. k .. " in the blueprint" end end
+	for k = 1, #B do if not refs.B[k] then return nil, "Couldn't find B" .. k .. " in the blueprint" end end
+	local removeInters = {}
+	for id in pairs(removeSet) do
+		local child = childs[id]
+		local inter = inters[id]
+		-- a part on another body of the creation can't be removed this way: keep it
+		if child and inter and inter:getShape().body.id == home.id then
+			refs.remove[child] = true
+			removeInters[#removeInters + 1] = inter
+		end
+	end
+
+	local m = { kind = "lut", inputs = {}, outputs = {}, rows = {} }
+	for k = 1, #A do m.inputs[k] = "A" .. k end
+	for k = 1, #B do m.outputs[k] = "B" .. k end
+	for i, outs in ipairs(rows) do
+		local o = {}
+		for k = 1, #B do o[k] = outs[k] == 1 and 1 or 0 end
+		m.rows[i] = { outs = o, settled = true }
+	end
+	local bIsGate = {}
+	for k, id in ipairs(B) do bIsGate[k] = graph[id] ~= nil and graph[id].kind == "gate" end
+	local plan = LogicModule.lutPlan(m, { even = data.even ~= false, compress = data.compress == true, bIsGate = bIsGate })
+
+	-- for the preview: a known part's cell and world position, to place the rest
+	local refShape = Ain[1]:getShape()
+	local refCell = LogicModule.cellOf(refs.A[1])
+	local origin = LogicModule.placeOnTop(bp.bodies[1])
+	local childOf = LogicModule.applyLut(bp, plan, refs, origin)
+
+	return {
+		bp = bp, oldBp = oldBp, home = home, lifted = lifted, plan = plan, childOf = childOf,
+		origin = origin, refCell = refCell, refPos = refShape.worldPosition, rot = home.worldRotation,
+		removeInters = removeInters, kept = #inside.parts - #removeInters, nA = #A, nB = #B,
+	}
+end
+
+function LogicTool:sv_lutBuild(data, player)
+	local ok, err = pcall(function()
+		local ctx, perr = self:sv_lutPrepare(data)
+		if not ctx then
+			self.network:sendToClient(player, "cl_onLutBuilt", { error = perr })
+			return
+		end
+
+		if not data.apply then
+			-- preview: where everything goes, as world positions
+			local function world(c)
+				local d = sm.vec3.new(c[1] - ctx.refCell[1], c[2] - ctx.refCell[2], c[3] - ctx.refCell[3]) * 0.25
+				return ctx.refPos + ctx.rot * d
+			end
+			local cells = {}
+			local o = ctx.origin
+			for _, p in ipairs(ctx.plan.parts) do
+				cells[#cells + 1] = { pos = world(LogicModule.toBody(o, p.x, p.y, p.z)), kind = "new" }
+			end
+			for _, mv in ipairs(ctx.plan.moves) do
+				cells[#cells + 1] = { pos = world(LogicModule.toBody(o, mv.x, mv.y, mv.z)), kind = mv.ref:sub(1, 1) }
+			end
+			self.network:sendToClient(player, "cl_onLutPreview", {
+				cells = cells, rot = ctx.rot, remove = ctx.removeInters, kept = ctx.kept,
+				gates = ctx.plan.counts.gates, lifted = ctx.lifted,
+			})
+			return
+		end
+
+		local creation = sm.creation.importFromString(sm.world.getCurrentWorld(), sm.json.writeJsonString(ctx.bp), nil, nil, true)
+		if not creation or not creation[1] then
+			self.network:sendToClient(player, "cl_onLutBuilt", { error = "The game refused the new blueprint; nothing was changed" })
+			return
+		end
+		for _, shape in ipairs(ctx.home:getCreationShapes()) do
+			if sm.exists(shape) then shape:destroyShape() end
+		end
+		self.sv.lutUndo[player.id] = { json = sm.json.writeJsonString(ctx.oldBp), bodies = creation }
+		self.sv.undo[player.id] = {} -- wire undo pointed at the old parts
+
+		-- the new parts in blueprint order: find the new A and B
+		-- (by blueprint order; if the game ordered them differently, by position)
+		local function newInter(child)
+			local body = creation[1]
+			local shapes = body:getShapes()
+			for si, c in ipairs(ctx.bp.bodies[1].childs) do
+				if c == child then
+					local shape = shapes[si]
+					if shape and tostring(shape.uuid) == child.shapeId then return shape.interactable end
+				end
+			end
+			for _, shape in ipairs(shapes) do
+				local lp = shape.localPosition
+				if lp and tostring(shape.uuid) == child.shapeId and lp.x == child.pos.x and lp.y == child.pos.y and lp.z == child.pos.z then
+					return shape.interactable
+				end
+			end
+		end
+		local newA, newB = {}, {}
+		for k = 1, ctx.nA do newA[k] = newInter(ctx.childOf["A" .. k]) end
+		for k = 1, ctx.nB do newB[k] = newInter(ctx.childOf["B" .. k]) end
+		local found = #newA == ctx.nA and #newB == ctx.nB
+		self.network:sendToClient(player, "cl_onLutBuilt", {
+			A = found and newA or nil, B = found and newB or nil,
+			gates = ctx.plan.counts.gates, removed = #ctx.removeInters, lifted = ctx.lifted,
+		})
+	end)
+	if not ok then
+		self.network:sendToClient(player, "cl_onLutBuilt", { error = "Build failed: " .. tostring(err) })
+	end
+end
+
+-- Puts back the creation as it was before the last build.
+function LogicTool:sv_lutUndo(_, player)
+	local u = self.sv.lutUndo[player.id]
+	if not u then
+		self.network:sendToClient(player, "cl_message", "No build to undo")
+		return
+	end
+	local body
+	for _, b in ipairs(u.bodies) do if sm.exists(b) then body = b break end end
+	local creation = sm.creation.importFromString(sm.world.getCurrentWorld(), u.json, nil, nil, true)
+	if not creation then
+		self.network:sendToClient(player, "cl_message", "#ff4040Undo build failed: the game refused the old blueprint")
+		return
+	end
+	if body then
+		for _, shape in ipairs(body:getCreationShapes()) do
+			if sm.exists(shape) then shape:destroyShape() end
+		end
+	end
+	self.sv.lutUndo[player.id] = nil
+	self.sv.undo[player.id] = {}
+	self.network:sendToClient(player, "cl_onLutBuilt", { undone = true })
 end
 
 function LogicTool:sv_analyze(data, player)
@@ -531,15 +804,18 @@ function LogicTool:sv_analyze(data, player)
 				if not rows then
 					reply.error = terr
 				else
+					-- like a binary number: highest first, so A1 and B1 are on the right
 					reply.rows = {}
 					for _, row in ipairs(rows) do
 						local a, b = {}, {}
-						for k, v in ipairs(row.ins) do a[k] = v and "1" or "0" end
-						for k, v in ipairs(row.outs) do b[k] = v and "1" or "0" end
+						for k = #row.ins, 1, -1 do a[#a + 1] = row.ins[k] and "1" or "0" end
+						for k = #row.outs, 1, -1 do b[#b + 1] = row.outs[k] and "1" or "0" end
 						reply.rows[#reply.rows + 1] = table.concat(a, " ") .. "  |  " .. table.concat(b, " ") .. (row.settled and "" or "   (never settles)")
 					end
 				end
 			end
+		elseif data.kind == "module" then
+			reply.module, reply.error, reply.leaks = self:sv_loadModule(graph, inters, labels, data, A, B)
 		end
 
 		self.network:sendToClient(player, "cl_onAnalysis", reply)
@@ -610,7 +886,15 @@ function LogicTool:client_onCreate()
 		typeAge = 0,                           -- seconds since type labels were last asked for
 		exampleIndex = 0,
 		script = "",
-		leftWindow = nil,                      -- "script" or "settings": the window shown on the left
+		leftWindow = nil,                      -- "script", "settings" or "module": the window shown on the left
+		module = nil,                          -- the last loaded module (LogicModule table)
+		moduleRows = nil,                      -- the edited table's rows, nil = as loaded
+		moduleError = nil,                     -- "line 3: ..." when the edited table can't be read
+		lutCompress = false,                   -- setting: stack each LUT gate column in one block
+		lutEven = true,                        -- setting: buffers too, so every path is 3 ticks
+		lutPreview = nil,                      -- { effects = {} } while a build preview is shown
+		verifyRows = nil,                      -- while building: the table the new logic must match
+		verify = nil,                          -- after a build: { rows, wait, tries } (see cl_updateVerify)
 		press = nil,
 	}
 
@@ -626,14 +910,16 @@ function LogicTool:client_onCreate()
 	local gui = sm.gui.createGuiFromLayout("$CONTENT_DATA/Gui/Layouts/LogicTool.layout", false)
 	for _, name in ipairs({ "close", "active", "clearActive", "clearAll", "undo", "sortX", "sortY", "sortZ", "reverse",
 		"allToAll", "zip", "chain", "wireMode", "clearOut", "clearIn", "timing", "truth", "lint", "lines", "labels",
-		"clearMarks", "example", "run", "help", "pickBy", "probeFwd", "probeBack", "openScript", "closeScript", "openSettings", "closeSettings", "boxMode", "format" }) do
+		"clearMarks", "example", "run", "help", "pickBy", "probeFwd", "probeBack", "openScript", "closeScript", "openSettings", "closeSettings", "openModule", "closeModule", "loadModule", "resetModule", "lutCompress", "lutEven", "buildLut", "cancelLut", "undoLut", "boxMode", "format" }) do
 		gui:setButtonCallback(name, "cl_onButton")
 	end
 	gui:setTextChangedCallback("script", "cl_onScriptChanged")
+	gui:setTextChangedCallback("moduleTable", "cl_onModuleTableChanged")
 	self.cl.gui = gui
 
 	self.cl.script = LogicScript.examples[1].code
 	self:cl_showScript()
+	self:cl_showModuleInfo()
 	self:cl_refreshGui()
 end
 
@@ -1403,6 +1689,10 @@ function LogicTool:cl_onAnalysis(r)
 		self:cl_onProbe(r)
 		return
 	end
+	if r.kind == "module" then
+		self:cl_onModule(r)
+		return
+	end
 
 	if r.error then
 		self:cl_setResult(r.error)
@@ -1476,7 +1766,7 @@ function LogicTool:cl_onAnalysis(r)
 		for _, inter in ipairs(r.warn or {}) do self:cl_flag(inter, COLOR_WARN) end
 
 	elseif r.kind == "truth" then
-		add("TRUTH TABLE  (A inputs  |  B outputs, in group order)")
+		add("TRUTH TABLE  (A inputs  |  B outputs, A1 and B1 on the right)")
 		for _, row in ipairs(r.rows or {}) do add(row) end
 		add("")
 		add("Simulated from all-off for each row; memory circuits may differ in game.")
@@ -1493,6 +1783,271 @@ function LogicTool:cl_onAnalysis(r)
 	if not self.cl.gui:isActive() then
 		sm.gui.displayAlertText((lines[2] or lines[1] or "Done") .. "  (R for details)", 3)
 	end
+end
+
+---------------------------------------------------------------------------
+-- CLIENT: module window
+---------------------------------------------------------------------------
+
+local MODULE_COLORS = { A = GROUP_HEX.A:sub(2), B = GROUP_HEX.B:sub(2), one = "ffffff", zero = "707070", text = "ffffff" }
+
+local function listText(prefix, types)
+	local out = {}
+	for k, t in ipairs(types or {}) do out[k] = prefix .. k .. " " .. t end
+	return table.concat(out, ",  ")
+end
+
+-- The module as it is now: the loaded one, with the edited rows if any.
+function LogicTool:cl_currentModule()
+	local m = self.cl.module
+	if m and self.cl.moduleRows then return LogicModule.withRows(m, self.cl.moduleRows) end
+	return m
+end
+
+function LogicTool:cl_showModuleTable()
+	local m = self.cl.module
+	local text = m and LogicModule.tableText(self:cl_currentModule(), { colors = MODULE_COLORS }) or ""
+	self.cl.moduleTableText = text
+	if self.cl.gui then self.cl.gui:setText("moduleTable", text) end
+end
+
+-- The info box: what was loaded, warnings, whether the edited table reads
+-- fine, and what a LUT build would make.
+function LogicTool:cl_showModuleInfo(errorText)
+	local gui = self.cl.gui
+	if not gui then return end
+	local m = self.cl.module
+	if errorText or not m then
+		gui:setText("moduleInfo", (errorText and ("#ff6060" .. errorText .. "#ffffff\n\n") or "") .. MODULE_HINT)
+		return
+	end
+	local cur = self:cl_currentModule()
+	local lines = {}
+	local function add(s) lines[#lines + 1] = s end
+	add(string.format("%sInputs (A): %d#ffffff   %s", GROUP_HEX.A, #m.inputs, listText("A", m.inputTypes)))
+	add(string.format("%sOutputs (B): %d#ffffff   %s", GROUP_HEX.B, #m.outputs, listText("B", m.outputTypes)))
+	add(string.format("Inside now: %d part(s)", m.inside or 0))
+	if (m.extraIn or 0) > 0 then
+		add(string.format("#ffcc40! %d part(s) outside A also feed it (marked red). The table counts them as off.#ffffff", m.extraIn))
+	end
+	if (m.extraOut or 0) > 0 then
+		add(string.format("#ffcc40! %d part(s) inside also drive things outside B.#ffffff", m.extraOut))
+	end
+	local _, unsettled = LogicModule.tableText(m)
+	if unsettled > 0 and not self.cl.moduleRows then
+		add(string.format("#ffcc40! %d row(s) never settle: a clock or memory loop inside.#ffffff", unsettled))
+	end
+	add("")
+	if self.cl.moduleError then
+		add("#ff6060Table: " .. self.cl.moduleError .. "#ffffff")
+		add("Fix it to see the LUT again.")
+	else
+		add(self.cl.moduleRows and "#80ff80Table: edited#ffffff (Reset table goes back to the loaded one)" or "Table: as loaded")
+		local plan = LogicModule.lutPlan(cur, { even = self.cl.lutEven, compress = self.cl.lutCompress, bIsGate = m.outputGates })
+		add("As a LUT: " .. LogicModule.planText(plan, self.cl.lutCompress))
+		add("Build LUT shows a preview first. Nothing changes until Apply build; Undo build puts it back.")
+	end
+	add("")
+	add(string.format("Rows are binary numbers: A%d..A1 | B%d..B1, so A1 and B1 are the rightmost digits. Edit the output digits.", #m.inputs, #m.outputs))
+	self.cl.moduleInfoText = table.concat(lines, "\n")
+	gui:setText("moduleInfo", self.cl.moduleInfoText)
+end
+
+function LogicTool:cl_onModuleTableChanged(_, text)
+	local m = self.cl.module
+	if not m then return end
+	local rows, line, msg = LogicModule.parseTable(m, text)
+	-- a preview is for the table it was made from
+	if self.cl.lutPreview and text ~= self.cl.moduleTableText then self:cl_clearLutPreview() end
+	if rows then
+		-- same as loaded (also when the game reports our own setText) = not edited
+		self.cl.moduleRows = not LogicModule.sameRows(m.rows, rows) and rows or nil
+		self.cl.moduleError = nil
+	else
+		self.cl.moduleError = "line " .. line .. ": " .. msg
+	end
+	self.cl.moduleTableText = text
+	self:cl_showModuleInfo()
+end
+
+-- After a build the new creation is reloaded and compared with the table it
+-- was built from. The game may need a moment before the new wires read back,
+-- so it waits, and tries again a few times if the result doesn't match.
+local VERIFY_WAITS = { 0.5, 1, 2 }
+
+function LogicTool:cl_updateVerify(dt)
+	local v = self.cl.verify
+	if not (v and v.wait) then return end
+	v.wait = v.wait - dt
+	if v.wait <= 0 then
+		v.wait = nil
+		v.tries = v.tries + 1
+		self:cl_requestAnalysis("module")
+	end
+end
+
+-- Handles a reload while verifying. Returns true when it took care of the reply.
+function LogicTool:cl_verifyReply(r)
+	local v = self.cl.verify
+	if not v then return false end
+	local ok = not r.error and r.module and LogicModule.sameRows(v.rows, r.module.rows)
+	if ok then
+		self.cl.verify = nil
+		return false -- show it like any load, then say it matched (cl_onModule)
+	end
+	if v.tries < #VERIFY_WAITS then
+		v.wait = VERIFY_WAITS[v.tries + 1]
+		return true -- quietly try again
+	end
+	-- still different: keep the player's table on the new module, so the next
+	-- Build builds what they wanted, never the (wrong) reloaded rows
+	self.cl.verify = nil
+	if r.module then
+		self.cl.module = r.module
+		self.cl.moduleRows = not LogicModule.sameRows(r.module.rows, v.rows) and v.rows or nil
+		self.cl.moduleError = nil
+		self:cl_showModuleTable()
+	end
+	self:cl_showModuleInfo()
+	self:cl_message("#ffcc40Built, but reloading it gives a different table" .. (r.error and (" (" .. r.error .. ")") or "")
+		.. ". Your table is kept. Check the creation, or press Undo build.")
+	self:cl_refreshGui()
+	return true
+end
+
+function LogicTool:cl_onModule(r)
+	self.cl.leftWindow = "module"
+	local verifying = self.cl.verify ~= nil
+	if self:cl_verifyReply(r) then return end
+	if r.error then
+		sm.gui.displayAlertText(r.error, 2.5)
+		self:cl_showModuleInfo(r.error)
+		self:cl_refreshGui()
+		return
+	end
+	local m = r.module
+	self.cl.module = m
+	self.cl.moduleRows, self.cl.moduleError = nil, nil
+	self:cl_clearMarks()
+	for _, inter in ipairs(r.leaks or {}) do self:cl_flag(inter, COLOR_WARN) end
+	self:cl_showModuleTable()
+	self:cl_showModuleInfo()
+	self:cl_setResult(string.format("Loaded module: %d in, %d out, %d part(s) inside.", #m.inputs, #m.outputs, m.inside or 0))
+	if verifying then
+		self:cl_message("#80ff80Built. Reloaded it: the new logic matches your table.")
+	end
+	self:cl_refreshGui()
+end
+
+---------------------------------------------------------------------------
+-- CLIENT: build a module as a LUT
+---------------------------------------------------------------------------
+
+local PREVIEW_COLORS = { new = sm.color.new("40ff60ff"), A = sm.color.new("ff9900ff"), B = sm.color.new("00c8ffff") }
+
+-- First press: preview. Second press (while the preview shows): apply.
+function LogicTool:cl_buildLut()
+	local m = self.cl.module
+	if not m then
+		sm.gui.displayAlertText("Load A > B first", 2)
+		return
+	end
+	if self.cl.moduleError then
+		sm.gui.displayAlertText("Fix the table first: " .. self.cl.moduleError, 2.5)
+		return
+	end
+	local rows = {}
+	for i, row in ipairs(self:cl_currentModule().rows) do rows[i] = row.outs end
+	local apply = self.cl.lutPreview ~= nil
+	if apply then
+		self.cl.verifyRows = self:cl_currentModule().rows
+		self:cl_clearLutPreview()
+	end
+	self.network:sendToServer("sv_lutBuild", {
+		A = self:cl_inters("A"), B = self:cl_inters("B"), rows = rows,
+		even = self.cl.lutEven, compress = self.cl.lutCompress, apply = apply,
+	})
+end
+
+function LogicTool:cl_clearLutPreview(quiet)
+	local p = self.cl.lutPreview
+	if not p then return end
+	for _, e in ipairs(p.effects) do
+		if sm.exists(e) then e:destroy() end
+	end
+	self.cl.lutPreview = nil
+	self:cl_clearMarks()
+	if self.cl.gui and not quiet then self:cl_refreshGui() end
+end
+
+function LogicTool:cl_onLutPreview(r)
+	self:cl_clearLutPreview()
+	local p = { effects = {} }
+	local size = sm.vec3.new(0.25, 0.25, 0.25) + sm.vec3.new(FLAG_PAD, FLAG_PAD, FLAG_PAD) * 2
+	for _, c in ipairs(r.cells or {}) do
+		local e = sm.effect.createEffect("ShapeRenderable")
+		e:setParameter("uuid", FRAME_UUID)
+		e:setParameter("color", PREVIEW_COLORS[c.kind] or PREVIEW_COLORS.new)
+		e:setPosition(c.pos)
+		e:setRotation(r.rot)
+		e:setScale(size)
+		e:start()
+		p.effects[#p.effects + 1] = e
+	end
+	self.cl.lutPreview = p
+	for _, inter in ipairs(r.remove or {}) do self:cl_flag(inter, COLOR_WARN) end
+
+	self:cl_showModuleInfo()
+	local lines = {
+		"",
+		"#80ff80BUILD PREVIEW#ffffff (green = new gates, orange/blue = where A/B go, red = removed)",
+		string.format("%d new gate(s), %d old part(s) removed%s. The module goes on top of the creation.",
+			r.gates or 0, #(r.remove or {}), (r.kept or 0) > 0 and string.format(", %d kept (they feed other things)", r.kept) or ""),
+		"Press Apply build to rebuild the creation, or Cancel.",
+	}
+	if (r.gates or 0) == 0 then
+		lines[#lines + 1] = "#ff6060The table is all 0: this build only removes the old logic and builds nothing.#ffffff"
+	end
+	if r.lifted then
+		lines[#lines + 1] = "#ffcc40It's on a lift: after the build it stands free in the same spot.#ffffff"
+	end
+	self.cl.gui:setText("moduleInfo", (self.cl.moduleInfoText or "") .. table.concat(lines, "\n"))
+	sm.gui.displayAlertText((r.gates or 0) == 0 and "#ff6060Table is all 0: Apply would only remove logic"
+		or "Preview shown: Apply build to rebuild, or Cancel", 3)
+	self:cl_refreshGui()
+end
+
+function LogicTool:cl_onLutBuilt(r)
+	self:cl_clearLutPreview()
+	if r.error then
+		self.cl.verifyRows = nil
+		self:cl_message("#ff6060" .. r.error)
+		self:cl_showModuleInfo()
+		return
+	end
+	if r.undone then
+		self.cl.verifyRows = nil
+		self.cl.verify = nil
+		self:cl_message("Build undone: the creation is back as it was before the build.")
+		return
+	end
+	if r.A and r.B then
+		for _, g in ipairs({ "A", "B" }) do
+			self:cl_clearGroup(g)
+			for _, inter in ipairs(r[g]) do
+				if sm.exists(inter) then self.cl.groups[g][#self.cl.groups[g] + 1] = { inter = inter, shape = inter:getShape() } end
+			end
+		end
+		self:cl_setResult(string.format("Built: %d new gate(s), %d old part(s) removed. Checking...", r.gates or 0, r.removed or 0))
+		-- reload the new module a moment later and compare (cl_updateVerify)
+		self.cl.verify = { rows = self.cl.verifyRows, wait = VERIFY_WAITS[1], tries = 0 }
+		self.cl.verifyRows = nil
+	else
+		self.cl.verifyRows = nil
+		self:cl_message("Built. Select A and B again to load the new module (couldn't find them after the rebuild).")
+	end
+	if r.lifted then chat("The creation was on a lift; it now stands free. Put it back on the lift if you need to.") end
+	self:cl_refreshGui()
 end
 
 ---------------------------------------------------------------------------
@@ -1638,8 +2193,13 @@ function LogicTool:cl_refreshGui()
 	local left = self.cl.leftWindow
 	gui:setText("openScript", left == "script" and "Hide script" or "< Script")
 	gui:setText("openSettings", left == "settings" and "Hide settings" or "< Settings")
+	gui:setText("openModule", left == "module" and "Hide module" or "< Module")
+	gui:setText("buildLut", self.cl.lutPreview and "Apply build" or "Build LUT")
+	gui:setText("lutCompress", self.cl.lutCompress and "Stacked" or "Spread out")
+	gui:setText("lutEven", self.cl.lutEven and "Even (3 ticks)" or "Fewer gates")
 	gui:setVisible("scriptWindow", left == "script")
 	gui:setVisible("settingsWindow", left == "settings")
+	gui:setVisible("moduleWindow", left == "module")
 end
 
 function LogicTool:cl_onButton(name)
@@ -1709,12 +2269,42 @@ function LogicTool:cl_onButton(name)
 		self:cl_formatScript()
 	elseif name == "boxMode" then
 		self:client_onToggle()
-	elseif name == "openScript" or name == "openSettings" then
+	elseif LEFT_WINDOWS[name] then
 		-- one window on the left at a time; the same button again hides it
-		local w = name == "openScript" and "script" or "settings"
+		local w = LEFT_WINDOWS[name]
 		self.cl.leftWindow = self.cl.leftWindow ~= w and w or nil
-	elseif name == "closeScript" or name == "closeSettings" then
+	elseif name == "closeScript" or name == "closeSettings" or name == "closeModule" then
 		self.cl.leftWindow = nil
+	elseif name == "buildLut" then
+		self:cl_buildLut()
+	elseif name == "cancelLut" then
+		if self.cl.lutPreview then
+			self:cl_clearLutPreview()
+			self:cl_showModuleInfo()
+			sm.gui.displayAlertText("Build cancelled", 1.5)
+		end
+	elseif name == "undoLut" then
+		self:cl_clearLutPreview()
+		self.network:sendToServer("sv_lutUndo")
+	elseif name == "loadModule" then
+		self.cl.verify = nil
+		self:cl_clearLutPreview()
+		self.cl.gui:setText("moduleInfo", "Loading A > B ...")
+		self:cl_requestAnalysis("module")
+	elseif name == "resetModule" then
+		if self.cl.module then
+			self.cl.moduleRows, self.cl.moduleError = nil, nil
+			self:cl_showModuleTable()
+			self:cl_showModuleInfo()
+		end
+	elseif name == "lutCompress" then
+		self.cl.lutCompress = not self.cl.lutCompress
+		self:cl_clearLutPreview()
+		self:cl_showModuleInfo()
+	elseif name == "lutEven" then
+		self.cl.lutEven = not self.cl.lutEven
+		self:cl_clearLutPreview()
+		self:cl_showModuleInfo()
 	elseif name == "pickBy" then
 		self.cl.pickMode = self.cl.pickMode % #PICK_MODES + 1
 		self:cl_setResult("F + click now picks every logic part in the creation with the " .. PICK_ALERT[PICK_MODES[self.cl.pickMode]] .. " as the one you click.")
@@ -1771,6 +2361,7 @@ function LogicTool:cl_clearAllVisuals()
 		self.cl.markers[g] = {}
 	end
 	self:cl_clearMarks()
+	self:cl_clearLutPreview(true)
 end
 
 local UP = sm.vec3.new(0, 1, 0)
@@ -1984,6 +2575,7 @@ end
 function LogicTool:client_onUpdate(dt)
 	self:cl_updateAnimations(dt)
 	if not self.tool:isLocal() then return end
+	self:cl_updateVerify(dt)
 
 	-- safety net: whatever happened in the equip callbacks, world visuals
 	-- only show while the tool is in hand

@@ -76,6 +76,12 @@ end
 local Body = {}
 Body.__index = Body
 function Body:getCreationBodies() return self.creation end
+function Body:isOnLift() return false end
+function Body:getCreationShapes()
+	local o = {}
+	for _, b in ipairs(self.creation) do for _, s in ipairs(b.shapes) do o[#o + 1] = s end end
+	return o
+end
 function Body:getShapes() return self.shapes end
 function Body:getInteractables()
 	local o = {}
@@ -91,8 +97,23 @@ local UUID_LIGHT = "ed27f5e2-cac5-4a32-a5d9-49f116acc6af"
 local body = setmetatable({ id = 1, worldPosition = vec(0, 0, 0), worldRotation = quat(), shapes = {} }, Body)
 body.creation = { body }
 
-local function addPart(uuid, x, y, z, ctrl, color)
+local function destroyShape(shape)
+	shape.destroyed = true
+	if shape.interactable then
+		local inter = shape.interactable
+		inter.destroyed = true
+		for _, c in ipairs(inter.children) do removeFrom(c.parents, inter) end
+		for _, p in ipairs(inter.parents) do removeFrom(p.children, inter) end
+	end
+	local b = shape.body
+	removeFrom(b.shapes, shape)
+	if #b.shapes == 0 then b.destroyed = true end
+end
+
+local function addPart(uuid, x, y, z, ctrl, color, onBody)
+	local body = onBody or body
 	local shape = {
+		gx = x, gy = y, gz = z, destroyShape = destroyShape,
 		uuid = setmetatable({ s = uuid }, { __tostring = function(t) return t.s end }),
 		color = setmetatable({ s = color or "df7f00ff" }, { __tostring = function(t) return t.s end,
 			__index = { getHexStr = function(t) return t.s end } }),
@@ -114,7 +135,8 @@ for i = 1, 4 do gates[i] = addPart(UUID_GATE, 2, i, 0, { mode = (i % 2) }) end
 local timer = addPart(UUID_TIMER, 4, 0, 0, { seconds = 0, ticks = 5 })
 local light = addPart(UUID_LIGHT, 6, 0, 0)
 -- a plain block (no interactable)
-body.shapes[#body.shapes + 1] = { uuid = "block", color = "x", worldPosition = vec(9, 9, 9), worldRotation = quat(), body = body }
+body.shapes[#body.shapes + 1] = { uuid = "block", color = "x", worldPosition = vec(9, 9, 9), worldRotation = quat(), body = body,
+	gx = 0, gy = 0, gz = -1, bounds = { x = 8, y = 6, z = 1 }, destroyShape = destroyShape }
 
 ---------------------------------------------------------------------------
 -- sm mock
@@ -152,6 +174,7 @@ function Gui:setMaxRenderDistance() end
 local function newGui() return setmetatable({ buttons = {}, textCbs = {}, texts = {}, visible = {}, active = false }, Gui) end
 
 local raycast = { hit = false }
+JSON_STORE, IMPORTS = {}, {}
 CAM = { pos = vec(0, -2, 0), dir = vec(0, 1, 0) }
 
 sm = {
@@ -181,19 +204,68 @@ sm = {
 	audio = { play = function() end },
 	localPlayer = { getRaycast = function() return raycast.hit, raycast.res end },
 	camera = { getPosition = function() return CAM.pos end, getDirection = function() return CAM.dir end },
-	creation = { exportToTable = function(b)
-		assert(SERVER, "export on client")
-		local childs = {}
-		for _, s in ipairs(b.shapes) do
-			local c = { shapeId = tostring(s.uuid) }
-			if s.interactable then
-				c.controller = { id = s.interactable.id }
-				for k, v in pairs(s.interactable.ctrl or {}) do c.controller[k] = v end
+	creation = {
+		exportToTable = function(b)
+			assert(SERVER, "export on client")
+			local childs = {}
+			for _, s in ipairs(b.shapes) do
+				local c = { shapeId = tostring(s.uuid), color = "df7f00" }
+				if s.bounds then
+					c.pos, c.bounds = { x = s.gx, y = s.gy, z = s.gz }, s.bounds
+				else
+					c.pos, c.xaxis, c.zaxis = { x = s.gx or 0, y = s.gy or 0, z = s.gz or 0 }, 1, 3
+				end
+				if s.interactable then
+					c.controller = { id = s.interactable.id }
+					for k, v in pairs(s.interactable.ctrl or {}) do c.controller[k] = v end
+					if #s.interactable.children > 0 then
+						c.controller.controllers = {}
+						for _, ch in ipairs(s.interactable.children) do c.controller.controllers[#c.controller.controllers + 1] = { id = ch.id } end
+					end
+				end
+				childs[#childs + 1] = c
 			end
-			childs[#childs + 1] = c
+			return { bodies = { { childs = childs } }, joints = {}, version = 4 }
+		end,
+		importFromString = function(world, json, pos, rot, transforms)
+			assert(SERVER, "import on client")
+			assert(transforms == true, "import without transforms")
+			local bp = JSON_STORE[json]
+			local nb = setmetatable({ id = newId(), worldPosition = vec(0, 0, 0), worldRotation = quat(), shapes = {} }, Body)
+			nb.creation = { nb }
+			local byId = {}
+			for _, c in ipairs(bp.bodies[1].childs) do
+				if c.controller then
+					local ctrl = { mode = c.controller.mode, seconds = c.controller.seconds, ticks = c.controller.ticks }
+					local inter = addPart(c.shapeId, c.pos.x, c.pos.y, c.pos.z, ctrl, nil, nb)
+					byId[c.controller.id] = inter
+				else
+					nb.shapes[#nb.shapes + 1] = { uuid = c.shapeId, gx = c.pos.x, gy = c.pos.y, gz = c.pos.z, bounds = c.bounds,
+						color = "x", worldPosition = vec(0, 0, 0), worldRotation = quat(), body = nb, destroyShape = destroyShape }
+				end
+			end
+			for _, c in ipairs(bp.bodies[1].childs) do
+				for _, w in ipairs(c.controller and c.controller.controllers or {}) do
+					assert(byId[w.id], "wire to unknown controller id " .. tostring(w.id))
+					byId[c.controller.id]:connect(byId[w.id])
+				end
+			end
+			IMPORTS[#IMPORTS + 1] = nb
+			return { nb }
+		end,
+	},
+	json = { writeJsonString = function(t)
+		-- deep copy, so later edits to `t` don't leak into the "string"
+		local function copy(v)
+			if type(v) ~= "table" then return v end
+			local o = {}
+			for k, x in pairs(v) do o[k] = copy(x) end
+			return o
 		end
-		return { bodies = { { childs = childs } } }
+		JSON_STORE[#JSON_STORE + 1] = copy(t)
+		return #JSON_STORE
 	end },
+	world = { getCurrentWorld = function() return "world" end },
 }
 
 function class()
@@ -225,7 +297,8 @@ end
 dofile("$CONTENT_DATA/Scripts/LogicTool.lua")
 
 -- no accidental globals from here on
-local allowed = { CAM = true, LogicTool = true, LogicScript = true, LogicGraph = true, SERVER = true, clamp = true }
+local allowed = { CAM = true, LogicTool = true, LogicScript = true, LogicGraph = true, LogicModule = true, SERVER = true, clamp = true,
+	JSON_STORE = true, IMPORTS = true }
 setmetatable(_G, {
 	__newindex = function(t, k, v)
 		if not allowed[k] then error("global write: " .. tostring(k), 2) end
@@ -523,6 +596,154 @@ step("pick by colour", function()
 end)
 check("same colour picked", #tool.cl.groups.A >= 6, #tool.cl.groups.A)
 step("pick reset", function() press("pickBy") press("pickBy") press("pickBy") press("pickBy") end)
+
+-- module window: load A (inputs) > B (outputs) as a table
+local function setGroup(g, list)
+	tool.cl.groups[g] = {}
+	for _, inter in ipairs(list) do tool.cl.groups[g][#tool.cl.groups[g] + 1] = { inter = inter, shape = inter.shape } end
+end
+local function moduleText() return (tool.cl.gui.texts.moduleInfo or "") .. "\n" .. (tool.cl.gui.texts.moduleTable or "") end
+local function moduleInfo() return tool.cl.gui.texts.moduleInfo or "" end
+step("module window opens with a hint", function() press("openModule") end)
+check("module window shown", tool.cl.gui.visible.moduleWindow == true and tool.cl.gui.visible.scriptWindow == false
+	and tool.cl.gui.texts.openModule == "Hide module")
+check("module hint", moduleText():find("press Load", 1, true), moduleText())
+step("module wiring: switch1 > gate3 (OR) > gate4 (AND), switch2 > gate4", function()
+	SERVER = true
+	for _, g in ipairs(gates) do
+		for _, c in ipairs(g:getChildren()) do g:disconnect(c) end
+		for _, p in ipairs(g:getParents()) do p:disconnect(g) end
+	end
+	for _, sw in ipairs({ switch1, switch2 }) do
+		for _, c in ipairs(sw:getChildren()) do sw:disconnect(c) end
+	end
+	gates[3].ctrl.mode = 1
+	gates[4].ctrl.mode = 0
+	switch1:connect(gates[3])
+	gates[3]:connect(gates[4])
+	switch2:connect(gates[4])
+	SERVER = false
+	setGroup("A", { switch1, switch2 })
+	setGroup("B", { gates[4] })
+	press("loadModule")
+end)
+check("module loaded", tool.cl.module ~= nil and #tool.cl.module.inputs == 2 and #tool.cl.module.outputs == 1)
+check("module inside", tool.cl.module and tool.cl.module.inside == 1, tool.cl.module and tool.cl.module.inside)
+-- B1 = (A1 OR nothing) AND A2: only row 11 (address 3) is on
+check("module table", tool.cl.module and table.concat(tool.cl.module.rows[4].outs) == "1"
+	and table.concat(tool.cl.module.rows[2].outs) == "0", moduleText())
+check("module text shows the table", moduleText():find("Inside now: 1 part", 1, true) and moduleText():find("11   |   ", 1, true), moduleText())
+check("module plan shown", moduleInfo():find("As a LUT: 2 buffer(s) + 0 inverter(s)", 1, true) == nil
+	and moduleInfo():find("As a LUT: 2 buffer(s) + 1 row AND(s) = 3 new gate(s), 3 ticks", 1, true), moduleInfo())
+-- edit: row 00 now also turns B1 on (the game sends the whole text, colour codes and all)
+step("edit table", function()
+	local t = tool.cl.gui.texts.moduleTable
+	local edited = t:gsub("\n00   |   #7070700", "\n00   |   1", 1)
+	tool:cl_onModuleTableChanged("moduleTable", edited)
+end)
+check("edit read", tool.cl.moduleRows and table.concat(tool.cl.moduleRows[1].outs) == "1" and tool.cl.moduleError == nil,
+	tool.cl.moduleError)
+check("edit plan", moduleInfo():find("Table: edited", 1, true)
+	and moduleInfo():find("2 buffer(s) + 2 inverter(s) + 2 row AND(s) = 6 new gate(s), 3 ticks", 1, true), moduleInfo())
+step("settings change the plan", function() press("lutEven") press("lutCompress") end)
+check("fewer gates + stacked", moduleInfo():find("2 inverter(s) + 2 row AND(s) = 4 new gate(s), 2-3 ticks, stacked in 2 block(s)", 1, true)
+	and tool.cl.gui.texts.lutEven == "Fewer gates" and tool.cl.gui.texts.lutCompress == "Stacked", moduleInfo())
+step("settings back", function() press("lutEven") press("lutCompress") end)
+step("bad edit", function() tool:cl_onModuleTableChanged("moduleTable", "12 | 1 row\n00 | 1\n0 | 1") end)
+check("bad edit says the line", moduleInfo():find("line 3: needs 2 input bit(s), has 1", 1, true), moduleInfo())
+step("own table text is not an edit", function()
+	press("resetModule")
+	tool:cl_onModuleTableChanged("moduleTable", tool.cl.gui.texts.moduleTable)
+end)
+check("unchanged table = as loaded", tool.cl.moduleRows == nil and moduleInfo():find("Table: as loaded", 1, true), moduleInfo())
+step("reset table", function() press("resetModule") end)
+check("reset", tool.cl.moduleRows == nil and tool.cl.moduleError == nil and moduleInfo():find("Table: as loaded", 1, true), moduleInfo())
+check("module types", moduleText():find("A1 ", 1, true) and moduleText():find("B1 AND", 1, true), moduleText())
+step("module needs A and B", function() setGroup("B", {}) press("loadModule") end)
+check("module error shown", moduleText():find("Load needs the inputs in A", 1, true), moduleText())
+-- a part on another creation
+local body2 = setmetatable({ id = 2, worldPosition = vec(5, 0, 0), worldRotation = quat(), shapes = {} }, Body)
+body2.creation = { body2 }
+step("module on two creations", function()
+	local other = addPart(UUID_GATE, 20, 0, 0, { mode = 1 })
+	other.shape.body = body2
+	body2.shapes[1] = other.shape
+	table.remove(body.shapes) -- addPart put it on body 1
+	setGroup("B", { other })
+	press("loadModule")
+end)
+check("module same creation", moduleText():find("same creation", 1, true), moduleText())
+-- build: XOR table, preview, apply, check, undo
+step("build: load switch1, switch2 > gate4", function()
+	setGroup("A", { switch1, switch2 })
+	setGroup("B", { gates[4] })
+	press("loadModule")
+	local t = tool.cl.gui.texts.moduleTable
+	t = t:gsub("\n01   |   #7070700", "\n01   |   1", 1):gsub("\n10   |   #7070700", "\n10   |   1", 1):gsub("\n11   |   #ffffff1", "\n11   |   0", 1)
+	tool:cl_onModuleTableChanged("moduleTable", t)
+end)
+check("build: table is XOR", tool.cl.moduleRows and table.concat({ tool.cl.moduleRows[1].outs[1], tool.cl.moduleRows[2].outs[1],
+	tool.cl.moduleRows[3].outs[1], tool.cl.moduleRows[4].outs[1] }) == "0110", tool.cl.moduleError)
+local shapesBefore = #body.shapes
+step("build: preview", function() press("buildLut") end)
+-- even timing: 2 buffers + 2 inverters + 2 rows = 6 new, plus 2 A and 1 B targets
+check("build: preview frames", tool.cl.lutPreview and #tool.cl.lutPreview.effects == 9, tool.cl.lutPreview and #tool.cl.lutPreview.effects)
+check("build: gate3 marked for removal", tool.cl.flags[gates[3].id] ~= nil)
+check("build: apply caption", tool.cl.gui.texts.buildLut == "Apply build")
+check("build: nothing changed yet", #IMPORTS == 0 and not switch1.destroyed)
+step("build: apply", function() press("buildLut") end)
+check("build: check waits a moment", result():find("Checking", 1, true) and tool.cl.verify ~= nil, result())
+step("build: half a second later", function() tool:client_onUpdate(0.3) tool:client_onUpdate(0.3) end)
+check("build: imported", #IMPORTS == 1 and switch1.destroyed and gates[4].destroyed, #IMPORTS)
+local newA1, newB1 = tool.cl.groups.A[1] and tool.cl.groups.A[1].inter, tool.cl.groups.B[1] and tool.cl.groups.B[1].inter
+check("build: groups point at the new parts", newA1 and newA1 ~= switch1 and not newA1.destroyed and newB1 and newB1.ctrl.mode == 1)
+check("build: B driven by 2 rows", newB1 and #newB1.parents == 2, newB1 and #newB1.parents)
+check("build: old gate3 gone", (function()
+	for _, s in ipairs(IMPORTS[1].shapes) do if s.interactable and s.interactable.ctrl.mode == 2 then return false end end
+	return true
+end)())
+-- the parts sit at z = 0 on a block at z = -1, so the top layer is z = 1
+check("build: A on top in a line along X", newA1 and newA1.shape.gz == 1 and tool.cl.groups.A[2].inter.shape.gx == newA1.shape.gx + 1
+	and tool.cl.groups.A[2].inter.shape.gy == newA1.shape.gy, newA1 and (newA1.shape.gz .. "," .. newA1.shape.gx))
+check("build: B further along Y", newB1 and newB1.shape.gy > newA1.shape.gy and newB1.shape.gx == newA1.shape.gx,
+	newB1 and (newB1.shape.gx .. "," .. newB1.shape.gy))
+check("build: checked against the table", result():find("matches your table", 1, true), result())
+check("build: preview gone", tool.cl.lutPreview == nil and tool.cl.gui.texts.buildLut == "Build LUT")
+check("build: check done", tool.cl.verify == nil and tool.cl.moduleRows == nil)
+-- a reload that reads back wrong (e.g. wires not ready yet): retry quietly,
+-- and in the end keep the player's table instead of the wrong one
+local xor = tool.cl.module.rows
+local zero = { kind = "lut", inputs = { "A1", "A2" }, outputs = { "B1" }, inside = 0, extraIn = 0, extraOut = 0,
+	inputTypes = {}, outputTypes = {}, outputGates = { true },
+	rows = { { outs = { 0 }, settled = true }, { outs = { 0 }, settled = true }, { outs = { 0 }, settled = true }, { outs = { 0 }, settled = true } } }
+step("build: wrong reload retries", function()
+	tool.cl.verify = { rows = xor, tries = 1 }
+	tool:cl_onModule({ kind = "module", module = zero })
+end)
+check("build: retry scheduled, table untouched", tool.cl.verify and tool.cl.verify.wait == 1 and tool.cl.module.rows == xor)
+step("build: still wrong after the last try", function()
+	tool.cl.verify.tries = 3
+	tool:cl_onModule({ kind = "module", module = zero })
+end)
+check("build: player's table kept", tool.cl.verify == nil and tool.cl.moduleRows == xor and result():find("Your table is kept", 1, true), result())
+check("build: next build would use the kept table", (function()
+	local rows = tool:cl_currentModule().rows
+	return rows[2].outs[1] == 1 and rows[3].outs[1] == 1
+end)())
+step("build: undo", function() press("undoLut") end)
+check("build: undo restores", #IMPORTS == 2 and newA1.destroyed and result():find("Build undone", 1, true), result())
+check("build: undo brings back every old part", #IMPORTS[2].shapes == shapesBefore, #IMPORTS[2].shapes .. " vs " .. shapesBefore)
+step("build: cancel", function()
+	setGroup("A", {}) setGroup("B", {})
+	press("buildLut") press("cancelLut")
+end)
+step("build: all-0 table warns in the preview", function()
+	tool:cl_onLutPreview({ cells = {}, rot = quat(), remove = {}, kept = 0, gates = 0 })
+end)
+check("build: all-0 warning", (tool.cl.gui.texts.moduleInfo or ""):find("only removes the old logic", 1, true), tool.cl.gui.texts.moduleInfo)
+step("build: cancel all-0", function() press("cancelLut") end)
+step("module window closes", function() press("closeModule") end)
+check("module window hidden", tool.cl.gui.visible.moduleWindow == false)
 
 -- destroyed part is pruned
 step("prune", function()

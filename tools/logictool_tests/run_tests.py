@@ -18,7 +18,7 @@ SANDBOX = "setmetatable, getmetatable, rawget, rawset, rawequal, load, loadstrin
 
 lua = lupa.LuaRuntime(unpack_returned_tuples=True)
 lua.execute("os = { clock = os.clock, time = os.time }; " + SANDBOX.replace("os.execute, ", ""))
-for name in ("LogicScript.lua", "LogicGraph.lua"):
+for name in ("LogicScript.lua", "LogicGraph.lua", "LogicModule.lua"):
     with open(os.path.join(SCRIPTS, name), encoding="utf-8") as f:
         lua.execute(f.read())
 

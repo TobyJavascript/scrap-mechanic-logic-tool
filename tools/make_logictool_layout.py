@@ -100,7 +100,7 @@ def main_layout():
     kids.append(button(1 - PAD - 0.2, y + 0.005, 0.2, 0.035, "Close", "close", skin=CLOSE_SKIN))
     y += 0.055
     # windows that open on the left (one at a time)
-    kids += button_row(y, [("openScript", "< Script"), ("openSettings", "< Settings")])
+    kids += button_row(y, [("openScript", "< Script"), ("openSettings", "< Settings"), ("openModule", "< Module")])
     y += ROW_H + GAP + 0.005
 
     # Groups
@@ -160,7 +160,28 @@ def main_layout():
     sk.append(edit_box(PAD, y, 1 - 2 * PAD, 1 - y - 0.02, "script"))
     script = W("Widget", "HudBackgroundLarge", 0.02, 0.06, 0.36, 0.88, "scriptWindow",
                props=[("Visible", "false")], children=sk)
-    return [panel, script, settings_window()]
+    return [panel, script, settings_window(), module_window()]
+
+
+def module_window():
+    """Module (left, hidden until opened): load A > B and show it as a table."""
+    mk = []
+    y = 0.015
+    mk.append(text(PAD, y, 0.4, 0.045, "MODULE", font="SM_Button"))
+    mk.append(button(1 - PAD - 0.2, y + 0.005, 0.2, 0.035, "Hide", "closeModule", skin=CLOSE_SKIN))
+    y += 0.055
+    mk += button_row(y, [("loadModule", "Load A > B"), ("resetModule", "Reset table")])
+    y += ROW_H + GAP
+    mk += button_row(y, [("buildLut", "Build LUT"), ("cancelLut", "Cancel"), ("undoLut", "Undo build")])
+    y += ROW_H + GAP + 0.005
+    info_h = 0.30
+    mk.append(edit_box(PAD, y, 1 - 2 * PAD, info_h, "moduleInfo", read_only=True))
+    y += info_h + GAP
+    mk.append(section(y, "TABLE   (edit the output digits)"))
+    y += 0.032
+    mk.append(edit_box(PAD, y, 1 - 2 * PAD, 1 - y - 0.02, "moduleTable"))
+    return W("Widget", "HudBackgroundLarge", 0.02, 0.06, 0.36, 0.88, "moduleWindow",
+             props=[("Visible", "false")], children=mk)
 
 
 def settings_window():
@@ -177,6 +198,8 @@ def settings_window():
         ("pickBy", "F + click picks", "type + colour", "Which parts count as the same when you F + click one."),
         ("lines", "Wire lines", "Off", "Draw the wires of selected parts in the world, red when on."),
         ("labels", "Part labels", "Order", "Text over selected parts: order in group, type, or delay."),
+        ("lutCompress", "LUT gates", "Spread out", "Stacked puts each column of new LUT gates in one block."),
+        ("lutEven", "LUT timing", "Even (3 ticks)", "Even adds a buffer per input so no row can glitch. Fewer gates skips them."),
     ]
     split = 0.45
     for name, label, value, desc in rows:

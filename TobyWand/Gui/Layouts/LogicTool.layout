@@ -11,13 +11,18 @@
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.0300 0.0700 0.4640 0.0400" name="openScript">
+        <Widget type="Button" skin="PrimaryButton" position_real="0.0300 0.0700 0.3053 0.0400" name="openScript">
             <Property key="Caption" value="&lt; Script"/>
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.5060 0.0700 0.4640 0.0400" name="openSettings">
+        <Widget type="Button" skin="PrimaryButton" position_real="0.3473 0.0700 0.3053 0.0400" name="openSettings">
             <Property key="Caption" value="&lt; Settings"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.6647 0.0700 0.3053 0.0400" name="openModule">
+            <Property key="Caption" value="&lt; Module"/>
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>
@@ -310,6 +315,118 @@
             <Property key="ReadOnly" value="true"/>
             <Property key="NeedMouse" value="false"/>
             <Property key="NeedKey" value="false"/>
+        </Widget>
+        <Widget type="TextBox" skin="TextBox" position_real="0.0300 0.5330 0.4200 0.0400">
+            <Property key="Caption" value="LUT gates"/>
+            <Property key="TextAlign" value="Left VCenter"/>
+            <Property key="FontName" value="SM_TextLabel"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.4500 0.5330 0.5200 0.0400" name="lutCompress">
+            <Property key="Caption" value="Spread out"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="EditBox" skin="EditBoxStretch" position_real="0.0300 0.5770 0.9400 0.0500">
+            <Property key="Caption" value="Stacked puts each column of new LUT gates in one block."/>
+            <Property key="TextAlign" value="Left Top"/>
+            <Property key="FontName" value="SM_TextSmall"/>
+            <Property key="TextColour" value="0.7 0.7 0.7"/>
+            <Property key="MultiLine" value="true"/>
+            <Property key="WordWrap" value="true"/>
+            <Property key="ReadOnly" value="true"/>
+            <Property key="NeedMouse" value="false"/>
+            <Property key="NeedKey" value="false"/>
+        </Widget>
+        <Widget type="TextBox" skin="TextBox" position_real="0.0300 0.6450 0.4200 0.0400">
+            <Property key="Caption" value="LUT timing"/>
+            <Property key="TextAlign" value="Left VCenter"/>
+            <Property key="FontName" value="SM_TextLabel"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.4500 0.6450 0.5200 0.0400" name="lutEven">
+            <Property key="Caption" value="Even (3 ticks)"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="EditBox" skin="EditBoxStretch" position_real="0.0300 0.6890 0.9400 0.0500">
+            <Property key="Caption" value="Even adds a buffer per input so no row can glitch. Fewer gates skips them."/>
+            <Property key="TextAlign" value="Left Top"/>
+            <Property key="FontName" value="SM_TextSmall"/>
+            <Property key="TextColour" value="0.7 0.7 0.7"/>
+            <Property key="MultiLine" value="true"/>
+            <Property key="WordWrap" value="true"/>
+            <Property key="ReadOnly" value="true"/>
+            <Property key="NeedMouse" value="false"/>
+            <Property key="NeedKey" value="false"/>
+        </Widget>
+    </Widget>
+    <Widget type="Widget" skin="HudBackgroundLarge" position_real="0.0200 0.0600 0.3600 0.8800" name="moduleWindow">
+        <Property key="Visible" value="false"/>
+        <Widget type="TextBox" skin="TextBox" position_real="0.0300 0.0150 0.4000 0.0450">
+            <Property key="Caption" value="MODULE"/>
+            <Property key="TextAlign" value="Left VCenter"/>
+            <Property key="FontName" value="SM_Button"/>
+        </Widget>
+        <Widget type="Button" skin="SecondaryButton" position_real="0.7700 0.0200 0.2000 0.0350" name="closeModule">
+            <Property key="Caption" value="Hide"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.0300 0.0700 0.4640 0.0400" name="loadModule">
+            <Property key="Caption" value="Load A &gt; B"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.5060 0.0700 0.4640 0.0400" name="resetModule">
+            <Property key="Caption" value="Reset table"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.0300 0.1180 0.3053 0.0400" name="buildLut">
+            <Property key="Caption" value="Build LUT"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.3473 0.1180 0.3053 0.0400" name="cancelLut">
+            <Property key="Caption" value="Cancel"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.6647 0.1180 0.3053 0.0400" name="undoLut">
+            <Property key="Caption" value="Undo build"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Widget" skin="SearchBarBackground" position_real="0.0300 0.1710 0.9400 0.3000">
+            <Widget type="EditBox" skin="EditBoxStretch" position_real="0.0100 0.0200 0.9800 0.9600" name="moduleInfo">
+                <Property key="MultiLine" value="true"/>
+                <Property key="WordWrap" value="true"/>
+                <Property key="TextAlign" value="Left Top"/>
+                <Property key="FontName" value="SM_TextSmall"/>
+                <Property key="TextColour" value="1 1 1"/>
+                <Property key="MaxTextLength" value="100000"/>
+                <Property key="VisibleVScroll" value="true"/>
+                <Property key="Caption" value=""/>
+                <Property key="ReadOnly" value="true"/>
+            </Widget>
+        </Widget>
+        <Widget type="TextBox" skin="TextBox" position_real="0.0300 0.4790 0.9400 0.0300">
+            <Property key="Caption" value="TABLE   (edit the output digits)"/>
+            <Property key="TextAlign" value="Left VCenter"/>
+            <Property key="FontName" value="SM_HeaderTiny"/>
+            <Property key="TextColour" value="0.85 0.65 0.2"/>
+        </Widget>
+        <Widget type="Widget" skin="SearchBarBackground" position_real="0.0300 0.5110 0.9400 0.4690">
+            <Widget type="EditBox" skin="EditBoxStretch" position_real="0.0100 0.0200 0.9800 0.9600" name="moduleTable">
+                <Property key="MultiLine" value="true"/>
+                <Property key="WordWrap" value="true"/>
+                <Property key="TextAlign" value="Left Top"/>
+                <Property key="FontName" value="SM_TextSmall"/>
+                <Property key="TextColour" value="1 1 1"/>
+                <Property key="MaxTextLength" value="100000"/>
+                <Property key="VisibleVScroll" value="true"/>
+                <Property key="Caption" value=""/>
+                <Property key="TabPrinting" value="true"/>
+            </Widget>
         </Widget>
     </Widget>
     <CodeGeneratorSettings/>
