@@ -83,10 +83,11 @@ local DRAG_START = 0.3
 -- Axes are the creation's own (Z is up when it stands as built).
 local BOX_MODES = { "3d", "xy", "xz", "yz" }
 local BOX_NAMES = { ["3d"] = "3D box", xy = "XY layer (flat)", xz = "XZ layer (wall)", yz = "YZ layer (wall)" }
+local BOX_SHORT = { ["3d"] = "3D box", xy = "XY layer", xz = "XZ layer", yz = "YZ layer" }
 local BOX_NORMAL = { xy = "z", xz = "y", yz = "x" }
 
 local LABEL_MODES = { "off", "index", "type", "delay" }
-local LABEL_NAMES = { off = "Labels: off", index = "Labels: order", type = "Labels: type", delay = "Labels: delay" }
+local LABEL_NAMES = { off = "Off", index = "Order", type = "Type", delay = "Delay" }
 
 local CONNECT_MODES = { allToAll = "All > All", zip = "Zip 1:1", chain = "Chain" }
 -- What All > All / Zip / Chain do: add wires, remove them, or toggle each pair.
@@ -97,8 +98,8 @@ local WIRE_VERBS = { connect = "Connect", cut = "Cut", flip = "Flip" }
 -- what F+click picks: parts in the creation that match the one clicked
 local PICK_MODES = { "typeColor", "type", "color", "setting", "settingColor" }
 local PICK_NAMES = {
-	typeColor = "F: type + colour", type = "F: type", color = "F: colour",
-	setting = "F: mode/time", settingColor = "F: mode/time + colour",
+	typeColor = "type + colour", type = "type", color = "colour",
+	setting = "mode/time", settingColor = "mode/time + colour",
 }
 local PICK_ALERT = {
 	typeColor = "same type and colour", type = "same type", color = "same colour",
@@ -604,7 +605,7 @@ function LogicTool:client_onCreate()
 		labelTimer = 0,
 		exampleIndex = 0,
 		script = "",
-		scriptOpen = false,                    -- script window (left) shown
+		leftWindow = nil,                      -- "script" or "settings": the window shown on the left
 		press = nil,
 	}
 
@@ -620,7 +621,7 @@ function LogicTool:client_onCreate()
 	local gui = sm.gui.createGuiFromLayout("$CONTENT_DATA/Gui/Layouts/LogicTool.layout", false)
 	for _, name in ipairs({ "close", "active", "clearActive", "clearAll", "undo", "sortX", "sortY", "sortZ", "reverse",
 		"allToAll", "zip", "chain", "wireMode", "clearOut", "clearIn", "timing", "truth", "lint", "lines", "labels",
-		"clearMarks", "example", "run", "help", "pickBy", "probeFwd", "probeBack", "openScript", "closeScript", "boxMode", "format" }) do
+		"clearMarks", "example", "run", "help", "pickBy", "probeFwd", "probeBack", "openScript", "closeScript", "openSettings", "closeSettings", "boxMode", "format" }) do
 		gui:setButtonCallback(name, "cl_onButton")
 	end
 	gui:setTextChangedCallback("script", "cl_onScriptChanged")
@@ -1613,7 +1614,7 @@ function LogicTool:cl_refreshGui()
 		parts[#parts + 1] = GROUP_HEX[name] .. name .. " #ffffff" .. #self.cl.groups[name]
 	end
 	gui:setText("groupInfo", table.concat(parts, "     "))
-	gui:setText("lines", self.cl.showLines and "Lines: on" or "Lines: off")
+	gui:setText("lines", self.cl.showLines and "On" or "Off")
 	gui:setText("labels", LABEL_NAMES[LABEL_MODES[self.cl.labelMode]])
 	gui:setText("pickBy", PICK_NAMES[PICK_MODES[self.cl.pickMode]])
 	gui:setText("wireMode", WIRE_NAMES[WIRE_MODES[self.cl.wireMode]])
@@ -1621,9 +1622,12 @@ function LogicTool:cl_refreshGui()
 	gui:setText("chain", "Chain: " .. GROUP_HEX[g] .. g)
 	gui:setText("clearIn", "Clear inputs: " .. GROUP_HEX[g] .. g)
 	gui:setText("clearOut", "Clear outputs: " .. GROUP_HEX[g] .. g)
-	gui:setText("boxMode", "Box (Q): " .. BOX_NAMES[BOX_MODES[self.cl.boxMode]])
-	gui:setText("openScript", self.cl.scriptOpen and "Hide script" or "< Script")
-	gui:setVisible("scriptWindow", self.cl.scriptOpen)
+	gui:setText("boxMode", BOX_SHORT[BOX_MODES[self.cl.boxMode]])
+	local left = self.cl.leftWindow
+	gui:setText("openScript", left == "script" and "Hide script" or "< Script")
+	gui:setText("openSettings", left == "settings" and "Hide settings" or "< Settings")
+	gui:setVisible("scriptWindow", left == "script")
+	gui:setVisible("settingsWindow", left == "settings")
 end
 
 function LogicTool:cl_onButton(name)
@@ -1693,10 +1697,12 @@ function LogicTool:cl_onButton(name)
 		self:cl_formatScript()
 	elseif name == "boxMode" then
 		self:client_onToggle()
-	elseif name == "openScript" then
-		self.cl.scriptOpen = not self.cl.scriptOpen
-	elseif name == "closeScript" then
-		self.cl.scriptOpen = false
+	elseif name == "openScript" or name == "openSettings" then
+		-- one window on the left at a time; the same button again hides it
+		local w = name == "openScript" and "script" or "settings"
+		self.cl.leftWindow = self.cl.leftWindow ~= w and w or nil
+	elseif name == "closeScript" or name == "closeSettings" then
+		self.cl.leftWindow = nil
 	elseif name == "pickBy" then
 		self.cl.pickMode = self.cl.pickMode % #PICK_MODES + 1
 		self:cl_setResult("F + click now picks every logic part in the creation with the " .. PICK_ALERT[PICK_MODES[self.cl.pickMode]] .. " as the one you click.")

@@ -16,7 +16,11 @@ GAP = 0.008         # vertical gap between rows
 
 
 def prop(key, value):
-    return f'<Property key="{key}" value={quoteattr(str(value))}/>'
+    value = str(value)
+    # The game's XML reader rejects a layout with ' in an attribute ("XML file
+    # contain incorrect attribute") and then shows an empty menu.
+    assert "'" not in value, f"no apostrophes in layout text: {value!r}"
+    return f'<Property key="{key}" value={quoteattr(value)}/>'
 
 
 class W:
@@ -93,9 +97,11 @@ def main_layout():
     kids = []
     y = 0.015
     kids.append(text(PAD, y, 0.4, 0.045, "TOBYWAND", font="SM_Button"))
-    kids.append(button(1 - PAD - 0.2 - 0.012 - 0.26, y + 0.005, 0.26, 0.035, "< Script", "openScript"))
     kids.append(button(1 - PAD - 0.2, y + 0.005, 0.2, 0.035, "Close", "close", skin=CLOSE_SKIN))
     y += 0.055
+    # windows that open on the left (one at a time)
+    kids += button_row(y, [("openScript", "< Script"), ("openSettings", "< Settings")])
+    y += ROW_H + GAP + 0.005
 
     # Groups
     kids.append(section(y, "GROUPS"))
@@ -122,14 +128,6 @@ def main_layout():
     kids += button_row(y, [("timing", "Timing A > B"), ("truth", "Truth table"), ("lint", "Check creation")])
     y += ROW_H + GAP
     kids += button_row(y, [("probeFwd", "Delays from A"), ("probeBack", "Delays to A"), ("clearMarks", "Clear marks")])
-    y += ROW_H + GAP + 0.005
-
-    # Tool settings
-    kids.append(section(y, "SETTINGS"))
-    y += 0.032
-    kids += button_row(y, [("boxMode", "Box (Q): 3D box"), ("pickBy", "F: type + colour")])
-    y += ROW_H + GAP
-    kids += button_row(y, [("lines", "Lines: off"), ("labels", "Labels: off")])
     y += ROW_H + GAP + 0.005
 
     # Results
@@ -162,7 +160,38 @@ def main_layout():
     sk.append(edit_box(PAD, y, 1 - 2 * PAD, 1 - y - 0.02, "script"))
     script = W("Widget", "HudBackgroundLarge", 0.02, 0.06, 0.36, 0.88, "scriptWindow",
                props=[("Visible", "false")], children=sk)
-    return [panel, script]
+    return [panel, script, settings_window()]
+
+
+def settings_window():
+    """Tool settings (left, hidden until opened). One row per setting:
+    name on the left, a button that cycles the value on the right, and a
+    short explanation under it."""
+    st = []
+    y = 0.015
+    st.append(text(PAD, y, 0.4, 0.045, "SETTINGS", font="SM_Button"))
+    st.append(button(1 - PAD - 0.2, y + 0.005, 0.2, 0.035, "Hide", "closeSettings", skin=CLOSE_SKIN))
+    y += 0.07
+    rows = [
+        ("boxMode", "Box select (Q)", "3D box", "Shape of a drag select. Layers keep it one block thick, like block drag in the game."),
+        ("pickBy", "F + click picks", "type + colour", "Which parts count as the same when you F + click one."),
+        ("lines", "Wire lines", "Off", "Draw the wires of selected parts in the world, red when on."),
+        ("labels", "Part labels", "Order", "Text over selected parts: order in group, type, or delay."),
+    ]
+    split = 0.45
+    for name, label, value, desc in rows:
+        st.append(text(PAD, y, split - PAD, ROW_H, label, font="SM_TextLabel"))
+        st.append(button(split, y, 1 - PAD - split, ROW_H, value, name))
+        y += ROW_H + 0.004
+        # read-only EditBox: unlike TextBox it wraps long lines (same as the result box)
+        st.append(W("EditBox", "EditBoxStretch", PAD, y, 1 - 2 * PAD, 0.05, None, [
+            ("Caption", desc), ("TextAlign", "Left Top"), ("FontName", "SM_TextSmall"),
+            ("TextColour", "0.7 0.7 0.7"), ("MultiLine", "true"), ("WordWrap", "true"),
+            ("ReadOnly", "true"), ("NeedMouse", "false"), ("NeedKey", "false"),
+        ]))
+        y += 0.05 + GAP + 0.01
+    return W("Widget", "HudBackgroundLarge", 0.02, 0.06, 0.36, 0.88, "settingsWindow",
+             props=[("Visible", "false")], children=st)
 
 
 def write(name, roots):

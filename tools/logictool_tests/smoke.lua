@@ -435,6 +435,18 @@ step("open script window", function() press("openScript") end)
 check("script window shown", tool.cl.gui.visible.scriptWindow == true and tool.cl.gui.texts.openScript == "Hide script")
 step("hide script window", function() press("closeScript") end)
 check("script window hidden", tool.cl.gui.visible.scriptWindow == false)
+check("settings hidden at start", tool.cl.gui.visible.settingsWindow == false)
+step("script then settings", function() press("openScript") press("openSettings") end)
+check("settings replaces script", tool.cl.gui.visible.settingsWindow == true and tool.cl.gui.visible.scriptWindow == false
+	and tool.cl.gui.texts.openSettings == "Hide settings" and tool.cl.gui.texts.openScript == "< Script")
+step("settings button again hides", function() press("openSettings") end)
+check("settings hidden", tool.cl.gui.visible.settingsWindow == false and tool.cl.gui.texts.openSettings == "< Settings")
+step("settings then script", function() press("openSettings") press("openScript") end)
+check("script replaces settings", tool.cl.gui.visible.scriptWindow == true and tool.cl.gui.visible.settingsWindow == false)
+step("hide settings button", function() press("openSettings") press("closeSettings") end)
+check("all left windows hidden", not tool.cl.gui.visible.scriptWindow and not tool.cl.gui.visible.settingsWindow)
+check("setting captions are values", tool.cl.gui.texts.boxMode == "3D box" and tool.cl.gui.texts.lines ~= nil
+	and not tool.cl.gui.texts.labels:find("Labels", 1, true), tool.cl.gui.texts.labels)
 step("examples/help", function() for _ = 1, 6 do press("example") end press("help") end)
 
 -- analysis: A switches -> C light
