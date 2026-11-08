@@ -605,6 +605,9 @@ end
 local function moduleText() return (tool.cl.gui.texts.moduleInfo or "") .. "\n" .. (tool.cl.gui.texts.moduleTable or "") end
 local function moduleInfo() return tool.cl.gui.texts.moduleInfo or "" end
 step("module window opens with a hint", function() press("openModule") end)
+check("LUT style starts on Auto", tool.cl.gui.texts.lutStyle == "Auto (fewest gates)", tool.cl.gui.texts.lutStyle)
+step("LUT style: ROM for the next tests", function() press("lutStyle") end)
+check("LUT style ROM", tool.cl.gui.texts.lutStyle == "ROM", tool.cl.gui.texts.lutStyle)
 check("module window shown", tool.cl.gui.visible.moduleWindow == true and tool.cl.gui.visible.scriptWindow == false
 	and tool.cl.gui.texts.openModule == "Hide module")
 check("module hint", moduleText():find("press Load", 1, true), moduleText())
@@ -634,7 +637,7 @@ check("module table", tool.cl.module and table.concat(tool.cl.module.rows[4].out
 	and table.concat(tool.cl.module.rows[2].outs) == "0", moduleText())
 check("module text shows the table", moduleText():find("Inside now: 1 part", 1, true) and moduleText():find("11   |   ", 1, true), moduleText())
 check("module plan shown", moduleInfo():find("As a LUT: 2 buffer(s) + 0 inverter(s)", 1, true) == nil
-	and moduleInfo():find("As a LUT: 2 buffer(s) + 1 row AND(s) = 3 new gate(s), 3 ticks", 1, true), moduleInfo())
+	and moduleInfo():find("As a LUT: ROM: 2 buffer(s) + 1 row AND(s) = 3 new gate(s), 3 ticks", 1, true), moduleInfo())
 -- edit: row 00 now also turns B1 on (the game sends the whole text, colour codes and all)
 step("edit table", function()
 	local t = tool.cl.gui.texts.moduleTable
@@ -733,6 +736,31 @@ end)())
 step("build: undo", function() press("undoLut") end)
 check("build: undo restores", #IMPORTS == 2 and newA1.destroyed and result():find("Build undone", 1, true), result())
 check("build: undo brings back every old part", #IMPORTS[2].shapes == shapesBefore, #IMPORTS[2].shapes .. " vs " .. shapesBefore)
+-- the same XOR table built in XOR style (PPRM), on the restored creation
+step("build xor: load the restored switches > gate", function()
+	local sw, g4 = {}, nil
+	for _, sh in ipairs(IMPORTS[2].shapes) do
+		if sh.interactable and tostring(sh.uuid) == UUID_SWITCH then sw[#sw + 1] = sh.interactable end
+		if sh.interactable and sh.gx == 2 and sh.gy == 4 then g4 = sh.interactable end
+	end
+	table.sort(sw, function(a, b) return a.shape.gy < b.shape.gy end)
+	setGroup("A", sw)
+	setGroup("B", { g4 })
+	press("lutStyle") -- ROM -> XOR
+	press("loadModule")
+	local t = tool.cl.gui.texts.moduleTable
+	t = t:gsub("\n01   |   #7070700", "\n01   |   1", 1):gsub("\n10   |   #7070700", "\n10   |   1", 1):gsub("\n11   |   #ffffff1", "\n11   |   0", 1)
+	tool:cl_onModuleTableChanged("moduleTable", t)
+end)
+check("build xor: style", tool.cl.gui.texts.lutStyle == "XOR (PPRM)" and moduleInfo():find("XOR (PPRM): 2 term AND(s) = 2 new gate(s), 2 ticks", 1, true), moduleInfo())
+step("build xor: preview", function() press("buildLut") end)
+check("build xor: preview frames", tool.cl.lutPreview and #tool.cl.lutPreview.effects == 5, tool.cl.lutPreview and #tool.cl.lutPreview.effects)
+step("build xor: apply and check", function() press("buildLut") tool:client_onUpdate(0.3) tool:client_onUpdate(0.3) end)
+local xB = tool.cl.groups.B[1] and tool.cl.groups.B[1].inter
+check("build xor: B is an XOR with 2 terms", xB and xB.ctrl.mode == 2 and #xB.parents == 2, xB and (tostring(xB.ctrl.mode) .. " " .. #xB.parents))
+check("build xor: checked against the table", result():find("matches your table", 1, true), result())
+step("build xor: back to Auto", function() press("lutStyle") end)
+check("build xor: Auto again", tool.cl.gui.texts.lutStyle == "Auto (fewest gates)")
 step("build: cancel", function()
 	setGroup("A", {}) setGroup("B", {})
 	press("buildLut") press("cancelLut")

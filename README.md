@@ -25,8 +25,11 @@ creations faster.
   that logic as a clean lookup table: A in a line, inverters, one AND per row,
   B as the ORs. You see a ghost preview first; afterwards the tool reloads the
   module and checks it against your table. Undo build puts the creation back.
-  Settings choose stacked or spread-out gates, and even 3-tick timing (no
-  glitches) or fewer gates.
+  Two styles: **ROM** (a decoder and an OR plane) and **XOR** (positive-polarity
+  Reed–Muller: XORs of shared AND terms, often much smaller); **Auto** picks
+  the one with fewer gates. Settings also choose stacked or spread-out gates,
+  and even timing (no glitches) or fewer gates. Builds that would break the
+  game's 255 inputs/outputs per part are refused before anything changes.
 - **Lua scripting**: a built-in editor with syntax highlighting, formatting and
   examples. Groups are Lua lists of parts, so wiring a decoder or a shift
   register takes a few lines:

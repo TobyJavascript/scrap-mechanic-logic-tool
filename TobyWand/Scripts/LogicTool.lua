@@ -73,6 +73,8 @@ local MAX_GROUP = 2048
 local OPS_PER_PACKET = 300
 local NET_LIST_LIMIT = 400
 local MODULE_MAX_OUTPUTS = 32
+local LUT_STYLES = { "auto", "rom", "xor" }
+local LUT_STYLE_NAMES = { auto = "Auto (fewest gates)", rom = "ROM", xor = "XOR (PPRM)" }
 -- buttons that open a window on the left (one at a time)
 local LEFT_WINDOWS = { openScript = "script", openSettings = "settings", openModule = "module" }
 local MODULE_HINT = "Put the inputs in A and the outputs in B (in order), then press Load.\n\n"
@@ -611,13 +613,25 @@ function LogicTool:sv_lutPrepare(data)
 	end
 	local bIsGate = {}
 	for k, id in ipairs(B) do bIsGate[k] = graph[id] ~= nil and graph[id].kind == "gate" end
-	local plan = LogicModule.lutPlan(m, { even = data.even ~= false, compress = data.compress == true, bIsGate = bIsGate })
+	local plan = LogicModule.lutPlan(m, { style = data.style, even = data.even ~= false, compress = data.compress == true, bIsGate = bIsGate })
+	if #plan.problems > 0 then return nil, "Can't build: " .. plan.problems[1] end
 
 	-- for the preview: a known part's cell and world position, to place the rest
 	local refShape = Ain[1]:getShape()
 	local refCell = LogicModule.cellOf(refs.A[1])
 	local origin = LogicModule.placeOnTop(bp.bodies[1])
 	local childOf = LogicModule.applyLut(bp, plan, refs, origin)
+
+	-- the game's wire limits, counting the rest of the creation's wires too
+	local over = LogicModule.wireLimits(bp)
+	if #over > 0 then
+		local name = "a part outside the module"
+		for ref, child in pairs(childOf) do
+			if child == over[1].child then name = LogicModule.refName(ref) end
+		end
+		return nil, string.format("Can't build: %s would have %d inputs and %d outputs (the game allows %d each)",
+			name, over[1].ins, over[1].outs, LogicModule.MAX_WIRES)
+	end
 
 	return {
 		bp = bp, oldBp = oldBp, home = home, lifted = lifted, plan = plan, childOf = childOf,
@@ -899,6 +913,7 @@ function LogicTool:client_onCreate()
 		moduleError = nil,                     -- "line 3: ..." when the edited table can't be read
 		lutCompress = false,                   -- setting: stack each LUT gate column in one block
 		lutEven = true,                        -- setting: buffers too, so every path is 3 ticks
+		lutStyle = 1,                          -- setting: index in LUT_STYLES
 		lutPreview = nil,                      -- { effects = {} } while a build preview is shown
 		verifyRows = nil,                      -- while building: the table the new logic must match
 		verify = nil,                          -- after a build: { rows, wait, tries } (see cl_updateVerify)
@@ -917,7 +932,7 @@ function LogicTool:client_onCreate()
 	local gui = sm.gui.createGuiFromLayout("$CONTENT_DATA/Gui/Layouts/LogicTool.layout", false)
 	for _, name in ipairs({ "close", "active", "clearActive", "clearAll", "undo", "sortX", "sortY", "sortZ", "reverse",
 		"allToAll", "zip", "chain", "wireMode", "clearOut", "clearIn", "timing", "truth", "lint", "lines", "labels",
-		"clearMarks", "example", "run", "help", "pickBy", "probeFwd", "probeBack", "openScript", "closeScript", "openSettings", "closeSettings", "openModule", "closeModule", "loadModule", "resetModule", "lutCompress", "lutEven", "buildLut", "cancelLut", "undoLut", "boxMode", "format" }) do
+		"clearMarks", "example", "run", "help", "pickBy", "probeFwd", "probeBack", "openScript", "closeScript", "openSettings", "closeSettings", "openModule", "closeModule", "loadModule", "resetModule", "lutCompress", "lutEven", "lutStyle", "buildLut", "cancelLut", "undoLut", "boxMode", "format" }) do
 		gui:setButtonCallback(name, "cl_onButton")
 	end
 	gui:setTextChangedCallback("script", "cl_onScriptChanged")
@@ -1852,8 +1867,10 @@ function LogicTool:cl_showModuleInfo(errorText)
 		add("Fix it to see the LUT again.")
 	else
 		add(self.cl.moduleRows and "#80ff80Table: edited#ffffff (Reset table goes back to the loaded one)" or "Table: as loaded")
-		local plan = LogicModule.lutPlan(cur, { even = self.cl.lutEven, compress = self.cl.lutCompress, bIsGate = m.outputGates })
+		local plan = LogicModule.lutPlan(cur, { style = LUT_STYLES[self.cl.lutStyle], even = self.cl.lutEven,
+			compress = self.cl.lutCompress, bIsGate = m.outputGates })
 		add("As a LUT: " .. LogicModule.planText(plan, self.cl.lutCompress))
+		for _, problem in ipairs(plan.problems) do add("#ff6060Can't build: " .. problem .. "#ffffff") end
 		add("Build LUT shows a preview first. Nothing changes until Apply build; Undo build puts it back.")
 	end
 	add("")
@@ -1973,7 +1990,7 @@ function LogicTool:cl_buildLut()
 		self:cl_clearLutPreview()
 	end
 	self.network:sendToServer("sv_lutBuild", {
-		A = self:cl_inters("A"), B = self:cl_inters("B"), rows = rows,
+		A = self:cl_inters("A"), B = self:cl_inters("B"), rows = rows, style = LUT_STYLES[self.cl.lutStyle],
 		even = self.cl.lutEven, compress = self.cl.lutCompress, apply = apply,
 	})
 end
@@ -2205,7 +2222,8 @@ function LogicTool:cl_refreshGui()
 	gui:setText("openModule", left == "module" and "Hide module" or "< Module")
 	gui:setText("buildLut", self.cl.lutPreview and "Apply build" or "Build LUT")
 	gui:setText("lutCompress", self.cl.lutCompress and "Stacked" or "Spread out")
-	gui:setText("lutEven", self.cl.lutEven and "Even (3 ticks)" or "Fewer gates")
+	gui:setText("lutEven", self.cl.lutEven and "Even timing" or "Fewer gates")
+	gui:setText("lutStyle", LUT_STYLE_NAMES[LUT_STYLES[self.cl.lutStyle]])
 	gui:setVisible("scriptWindow", left == "script")
 	gui:setVisible("settingsWindow", left == "settings")
 	gui:setVisible("moduleWindow", left == "module")
@@ -2312,6 +2330,10 @@ function LogicTool:cl_onButton(name)
 		self:cl_showModuleInfo()
 	elseif name == "lutEven" then
 		self.cl.lutEven = not self.cl.lutEven
+		self:cl_clearLutPreview()
+		self:cl_showModuleInfo()
+	elseif name == "lutStyle" then
+		self.cl.lutStyle = self.cl.lutStyle % #LUT_STYLES + 1
 		self:cl_clearLutPreview()
 		self:cl_showModuleInfo()
 	elseif name == "pickBy" then

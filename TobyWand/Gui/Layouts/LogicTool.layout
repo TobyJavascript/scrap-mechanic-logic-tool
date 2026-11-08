@@ -317,17 +317,17 @@
             <Property key="NeedKey" value="false"/>
         </Widget>
         <Widget type="TextBox" skin="TextBox" position_real="0.0300 0.5330 0.4200 0.0400">
-            <Property key="Caption" value="LUT gates"/>
+            <Property key="Caption" value="LUT style"/>
             <Property key="TextAlign" value="Left VCenter"/>
             <Property key="FontName" value="SM_TextLabel"/>
         </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.4500 0.5330 0.5200 0.0400" name="lutCompress">
-            <Property key="Caption" value="Spread out"/>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.4500 0.5330 0.5200 0.0400" name="lutStyle">
+            <Property key="Caption" value="Auto (fewest gates)"/>
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>
         <Widget type="EditBox" skin="EditBoxStretch" position_real="0.0300 0.5770 0.9400 0.0500">
-            <Property key="Caption" value="Stacked puts each column of new LUT gates in one block."/>
+            <Property key="Caption" value="ROM: a row AND per 1, OR outputs. XOR: Reed-Muller terms, XOR outputs. Auto: the smaller."/>
             <Property key="TextAlign" value="Left Top"/>
             <Property key="FontName" value="SM_TextSmall"/>
             <Property key="TextColour" value="0.7 0.7 0.7"/>
@@ -338,17 +338,38 @@
             <Property key="NeedKey" value="false"/>
         </Widget>
         <Widget type="TextBox" skin="TextBox" position_real="0.0300 0.6450 0.4200 0.0400">
-            <Property key="Caption" value="LUT timing"/>
+            <Property key="Caption" value="LUT gates"/>
             <Property key="TextAlign" value="Left VCenter"/>
             <Property key="FontName" value="SM_TextLabel"/>
         </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.4500 0.6450 0.5200 0.0400" name="lutEven">
-            <Property key="Caption" value="Even (3 ticks)"/>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.4500 0.6450 0.5200 0.0400" name="lutCompress">
+            <Property key="Caption" value="Spread out"/>
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>
         <Widget type="EditBox" skin="EditBoxStretch" position_real="0.0300 0.6890 0.9400 0.0500">
-            <Property key="Caption" value="Even adds a buffer per input so no row can glitch. Fewer gates skips them."/>
+            <Property key="Caption" value="Stacked puts each column of new LUT gates in one block."/>
+            <Property key="TextAlign" value="Left Top"/>
+            <Property key="FontName" value="SM_TextSmall"/>
+            <Property key="TextColour" value="0.7 0.7 0.7"/>
+            <Property key="MultiLine" value="true"/>
+            <Property key="WordWrap" value="true"/>
+            <Property key="ReadOnly" value="true"/>
+            <Property key="NeedMouse" value="false"/>
+            <Property key="NeedKey" value="false"/>
+        </Widget>
+        <Widget type="TextBox" skin="TextBox" position_real="0.0300 0.7570 0.4200 0.0400">
+            <Property key="Caption" value="LUT timing"/>
+            <Property key="TextAlign" value="Left VCenter"/>
+            <Property key="FontName" value="SM_TextLabel"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.4500 0.7570 0.5200 0.0400" name="lutEven">
+            <Property key="Caption" value="Even timing"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="EditBox" skin="EditBoxStretch" position_real="0.0300 0.8010 0.9400 0.0500">
+            <Property key="Caption" value="Even gives every path the same ticks, so nothing glitches. Fewer gates skips the extra gates."/>
             <Property key="TextAlign" value="Left Top"/>
             <Property key="FontName" value="SM_TextSmall"/>
             <Property key="TextColour" value="0.7 0.7 0.7"/>

@@ -509,7 +509,7 @@ do
 	local same = true
 	for _, p in ipairs(fewer.parts) do if p.y ~= 0 or p.z ~= 0 then same = false end end
 	check("plan stacked", same and fewer.columns == 2, fewer.columns)
-	check("plan text", LogicModule.planText(fewer, true) == "2 inverter(s) + 3 row AND(s) = 5 new gate(s), 2-3 ticks, stacked in 2 block(s)",
+	check("plan text", LogicModule.planText(fewer, true) == "ROM: 2 inverter(s) + 3 row AND(s) = 5 new gate(s), 2-3 ticks, stacked in 2 block(s)",
 		LogicModule.planText(fewer, true))
 
 	-- wrapping: 20 rows in one column go 16 high, then one layer up
@@ -661,6 +661,88 @@ do
 	local text = LogicModule.tableText(m)
 	check("row 1 shows as 001", text:find("\n001   |   01      1", 1, true) ~= nil, text)
 	check("row 4 shows as 100", text:find("\n100   |   10      4", 1, true) ~= nil, text)
+end
+
+do
+	-- XOR style (PPRM)
+	local function mod(nIn, nOut, f)
+		local m = { inputs = {}, outputs = {}, rows = {} }
+		for k = 1, nIn do m.inputs[k] = "A" .. (k - 1) end
+		for k = 1, nOut do m.outputs[k] = "B" .. (k - 1) end
+		for a = 0, 2 ^ nIn - 1 do
+			local o = {}
+			for j = 1, nOut do o[j] = f(a, j) end
+			m.rows[a + 1] = { outs = o }
+		end
+		return m
+	end
+	-- half adder: B0 = A0 xor A1, B1 = A0 and A1
+	local ha = mod(2, 2, function(a, j)
+		local x, y = a % 2, math.floor(a / 2) % 2
+		if j == 1 then return (x + y) % 2 end
+		return x * y
+	end)
+	local coef = LogicModule.pprm(ha)
+	check("pprm sum = A0 + A1", table.concat(coef[1]) == "0110", table.concat(coef[1]))
+	check("pprm carry = A0A1", table.concat(coef[2]) == "0001", table.concat(coef[2]))
+	local xp = LogicModule.lutPlan(ha, { style = "xor", bIsGate = { true, true } })
+	check("xor plan", xp.style == "xor" and xp.counts.terms == 3 and xp.counts.gates == 3 and xp.ticks == 2 and #xp.problems == 0,
+		xp.counts.terms .. " " .. tostring(xp.ticks))
+	check("xor B modes", xp.modes.B1 == LogicModule.MODE.XOR and xp.modes.B2 == LogicModule.MODE.XOR)
+	local fx = LogicModule.lutPlan(ha, { style = "xor", even = false, bIsGate = { true, true } })
+	check("xor fewer gates: single terms wired straight", fx.counts.terms == 1 and fx.ticks == "1-2", fx.counts.terms .. " " .. tostring(fx.ticks))
+	local auto = LogicModule.lutPlan(ha, { style = "auto", bIsGate = { true, true } })
+	check("auto picks the smaller", auto.style == "xor" and auto.auto.rom == 7 and auto.auto.xor == 3, auto.style)
+	check("auto text", LogicModule.planText(auto) == "Auto picked XOR (ROM 7, XOR 3 gates): 3 term AND(s) = 3 new gate(s), 2 ticks",
+		LogicModule.planText(auto))
+
+	-- NOR of 2: row 0 is 1, so the constant term makes B an XNOR
+	local nor = mod(2, 1, function(a) return a == 0 and 1 or 0 end)
+	local np = LogicModule.lutPlan(nor, { style = "xor", bIsGate = { true } })
+	check("xnor for a constant term", np.modes.B1 == LogicModule.MODE.XNOR, np.modes.B1)
+
+	-- always on: XOR can't, ROM can; auto picks ROM
+	local on = mod(2, 1, function() return 1 end)
+	local op = LogicModule.lutPlan(on, { style = "xor", bIsGate = { true } })
+	check("xor can't build constant 1", #op.problems == 1 and op.problems[1]:find("B0 is always on", 1, true), op.problems[1])
+	check("auto avoids it", LogicModule.lutPlan(on, { style = "auto", bIsGate = { true } }).style == "rom")
+
+	-- the game's 255 limit: an 8-input ROM output that is on in every row
+	local all = mod(8, 1, function() return 1 end)
+	local ap = LogicModule.lutPlan(all, { style = "rom", bIsGate = { true } })
+	check("255 limit found", #ap.problems == 1 and ap.problems[1] == "B0 would get 256 inputs (the game allows 255)", ap.problems[1])
+
+	-- every style and timing builds exactly its table: wire a graph from the
+	-- plan and simulate it, for random tables (fixed seed)
+	local seed = 12345
+	local function rnd() seed = (seed * 1103515245 + 12345) % 2147483648 return seed end
+	local allOk, tried = true, 0
+	for _, nIn in ipairs({ 1, 2, 3, 4 }) do
+		for _ = 1, 6 do
+			local m = mod(nIn, 2, function() return math.floor(rnd() / 65536) % 2 end)
+			for _, style in ipairs({ "rom", "xor" }) do
+				for _, even in ipairs({ true, false }) do
+					local plan = LogicModule.lutPlan(m, { style = style, even = even, bIsGate = { true, false } })
+					if #plan.problems == 0 then
+						tried = tried + 1
+						local nodes, ins = {}, {}
+						for k = 1, nIn do nodes["A" .. k] = { kind = "input" } ins[k] = "A" .. k end
+						nodes.B1 = { kind = "gate", mode = plan.modes.B1 }
+						nodes.B2 = { kind = "output" }
+						for _, p in ipairs(plan.parts) do nodes[p.ref] = { kind = "gate", mode = p.mode } end
+						local edges = {}
+						for _, w in ipairs(plan.wires) do edges[#edges + 1] = { w.from, w.to } end
+						local rows = LogicGraph.truthTable(mkgraph({ nodes = nodes, edges = edges }), ins, { "B1", "B2" })
+						if not LogicModule.sameRows(LogicModule.fromTruth(rows, nIn, 2).rows, m.rows) then
+							allOk = false
+							print("  mismatch: style " .. style .. " even " .. tostring(even) .. " inputs " .. nIn)
+						end
+					end
+				end
+			end
+		end
+	end
+	check("every plan builds its table (" .. tried .. " plans)", allOk and tried > 80, tried)
 end
 
 print(string.format("%d passed, %d failed", passed, failures))

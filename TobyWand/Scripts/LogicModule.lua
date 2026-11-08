@@ -243,32 +243,107 @@ end
 -- LUT plan: which gates to build, where, and how they are wired
 ---------------------------------------------------------------------------
 
-LogicModule.MODE = { AND = 0, OR = 1, NOR = 4 }
+LogicModule.MODE = { AND = 0, OR = 1, XOR = 2, NOR = 4, XNOR = 5 }
 LogicModule.WRAP = 16   -- a column longer than this continues one layer up
+LogicModule.MAX_WIRES = 255  -- the game's limit on a part's inputs, and on its outputs
 
--- Builds the plan for module `m` as a LUT. Only data: the server turns it
--- into real parts later. Coordinates are the module's own grid, in blocks:
--- x = column (A, input gates, rows, outputs), y = along the column, z = layer.
+local function hasBit(a, b) return math.floor(a / 2 ^ b) % 2 == 1 end
+
+-- A plan for module `m`: which gates to build, where, and how they are
+-- wired. Only data: the server turns it into real parts later. Coordinates
+-- are the module's own grid, in blocks: x = column (A, gates..., B),
+-- y = along the column, z = layer.
 --
--- opts.even     (default true) every input gets a buffer as well as an
---               inverter, so every path is 3 ticks and rows can't glitch
+-- opts.style    "rom" (default), "xor" or "auto" (whichever needs fewer gates)
+-- opts.even     (default true) every path gets the same number of ticks, so
+--               nothing can glitch; false saves gates
 -- opts.compress stack each gate column in one block
--- opts.bIsGate  { bool per output }: a gate B becomes the OR itself; any
---               other B (lamp, ...) gets an OR gate in front of it
+-- opts.bIsGate  { bool per output }: a gate B becomes the output gate itself;
+--               any other B (lamp, ...) gets a gate in front of it
 --
+-- plan.style    "rom" or "xor" (what was built; "auto" picks one)
 -- plan.parts = { { ref, mode, x, y, z } }         new gates
 -- plan.moves = { { ref = "A1", x, y, z } }        existing A/B parts, moved
 -- plan.modes = { ["B1"] = mode }                  existing B gates, new mode
 -- plan.wires = { { from = ref, to = ref } }
--- plan.counts, plan.ticks
+-- plan.counts, plan.ticks, plan.columns
+-- plan.problems = { "..." }  reasons it can't be built as it is (empty = fine)
+--
+-- ROM: a decoder and an OR plane. One inverter per input (and a buffer, for
+-- even timing), one AND per row that turns an output on, B = OR of its rows.
+-- XOR: positive-polarity Reed-Muller (PPRM). Each output is the XOR of AND
+-- terms of plain inputs (no inverters); a constant 1 term makes it XNOR.
+-- A game XOR gate with many inputs is parity, so it is one gate per output.
+local romPlan, xorPlan
+
+local function finishPlan(plan)
+	-- blocks used by the new gates when stacked: one per gate column
+	local columns = {}
+	for _, p in ipairs(plan.parts) do columns[p.x] = true end
+	plan.columns = 0
+	for _ in pairs(columns) do plan.columns = plan.columns + 1 end
+	-- the game's wire limits, for the wires this plan adds
+	local fanIn, fanOut = {}, {}
+	for _, w in ipairs(plan.wires) do
+		fanIn[w.to] = (fanIn[w.to] or 0) + 1
+		fanOut[w.from] = (fanOut[w.from] or 0) + 1
+	end
+	for ref, n in pairs(fanIn) do
+		if n > LogicModule.MAX_WIRES then
+			plan.problems[#plan.problems + 1] = string.format("%s would get %d inputs (the game allows %d)",
+				LogicModule.refName(ref), n, LogicModule.MAX_WIRES)
+		end
+	end
+	for ref, n in pairs(fanOut) do
+		if n > LogicModule.MAX_WIRES then
+			plan.problems[#plan.problems + 1] = string.format("%s would drive %d parts (the game allows %d)",
+				LogicModule.refName(ref), n, LogicModule.MAX_WIRES)
+		end
+	end
+	table.sort(plan.problems)
+	return plan
+end
+
+-- A plan ref as the player knows it: "A1" (the first input) is shown as A0.
+function LogicModule.refName(ref)
+	local kind, k = ref:match("^(%a+)(%d+)$")
+	k = tonumber(k)
+	if kind == "A" or kind == "B" then return kind .. (k - 1) end
+	if kind == "buf" then return "A" .. (k - 1) .. "'s buffer" end
+	if kind == "inv" then return "A" .. (k - 1) .. "'s inverter" end
+	if kind == "row" then return "row " .. k .. "'s AND" end
+	if kind == "term" then return "term " .. k .. "'s AND" end
+	if kind == "or" then return "B" .. (k - 1) .. "'s OR" end
+	if kind == "xo" then return "B" .. (k - 1) .. "'s XOR" end
+	return ref
+end
+
 function LogicModule.lutPlan(m, opts)
 	opts = opts or {}
+	local style = opts.style or "rom"
+	if style == "rom" then return finishPlan(romPlan(m, opts)) end
+	if style == "xor" then return finishPlan(xorPlan(m, opts)) end
+	-- auto: whichever can be built with fewer gates (a tie goes to XOR: 2 ticks)
+	local rom, xor = finishPlan(romPlan(m, opts)), finishPlan(xorPlan(m, opts))
+	local pick
+	if #xor.problems > 0 and #rom.problems == 0 then
+		pick = rom
+	elseif #rom.problems > 0 and #xor.problems == 0 then
+		pick = xor
+	else
+		pick = xor.counts.gates <= rom.counts.gates and xor or rom
+	end
+	pick.auto = { rom = rom.counts.gates, xor = xor.counts.gates }
+	return pick
+end
+
+function romPlan(m, opts)
 	local even = opts.even ~= false
 	local compress = opts.compress == true
 	local bIsGate = opts.bIsGate or {}
 	local MODE = LogicModule.MODE
 	local n, nOut = #m.inputs, #m.outputs
-	local plan = { parts = {}, moves = {}, modes = {}, wires = {},
+	local plan = { style = "rom", parts = {}, moves = {}, modes = {}, wires = {}, problems = {},
 		counts = { buffers = 0, inverters = 0, rows = 0, ors = 0, gates = 0 } }
 
 	local function pos(column, i, stack)
@@ -365,11 +440,122 @@ function LogicModule.lutPlan(m, opts)
 	else
 		plan.ticks = 2
 	end
-	-- blocks used by the new gates when stacked: one per gate column
-	local columns = {}
-	for _, p in ipairs(plan.parts) do columns[p.x] = true end
-	plan.columns = 0
-	for _ in pairs(columns) do plan.columns = plan.columns + 1 end
+	return plan
+end
+
+-- PPRM coefficients of every output: coef[j][address + 1] = 1 when the AND
+-- of the inputs set in `address` is one of output j's XOR terms (address 0 =
+-- the constant 1). The usual in-place transform over the truth table.
+function LogicModule.pprm(m)
+	local n, size = #m.inputs, #m.rows
+	local coef = {}
+	for j = 1, #m.outputs do
+		local f = {}
+		for a = 0, size - 1 do f[a] = m.rows[a + 1].outs[j] end
+		for b = 0, n - 1 do
+			for a = 0, size - 1 do
+				if hasBit(a, b) then
+					local lower = a - 2 ^ b
+					f[a] = (f[a] + f[lower]) % 2
+				end
+			end
+		end
+		local c = {}
+		for a = 0, size - 1 do c[a + 1] = f[a] end
+		coef[j] = c
+	end
+	return coef
+end
+
+function xorPlan(m, opts)
+	local even = opts.even ~= false
+	local compress = opts.compress == true
+	local bIsGate = opts.bIsGate or {}
+	local MODE = LogicModule.MODE
+	local n, nOut = #m.inputs, #m.outputs
+	local plan = { style = "xor", parts = {}, moves = {}, modes = {}, wires = {}, problems = {},
+		counts = { terms = 0, outs = 0, gates = 0 } }
+	local function pos(column, i)
+		if compress then return column, 0, 0 end
+		local w = LogicModule.WRAP
+		return column, (i - 1) % w, math.floor((i - 1) / w)
+	end
+	local function addPart(ref, mode, column, i, kind)
+		local x, y, z = pos(column, i)
+		plan.parts[#plan.parts + 1] = { ref = ref, mode = mode, x = x, y = y, z = z }
+		plan.counts[kind] = plan.counts[kind] + 1
+		plan.counts.gates = plan.counts.gates + 1
+	end
+	local function wire(from, to) plan.wires[#plan.wires + 1] = { from = from, to = to } end
+
+	local coef = LogicModule.pprm(m)
+
+	-- column 0: the inputs, in a line
+	for k = 1, n do
+		plan.moves[#plan.moves + 1] = { ref = "A" .. k, x = 0, y = (k - 1) % LogicModule.WRAP, z = math.floor((k - 1) / LogicModule.WRAP) }
+	end
+
+	-- column 1: one AND per term any output uses, shared between outputs.
+	-- A one-input term is just that input: with even timing it still gets an
+	-- AND (as a buffer), so every path is 2 ticks.
+	local src = {}
+	local used, single, multi = 0, false, false
+	for a = 1, #m.rows - 1 do
+		local wanted = false
+		for j = 1, nOut do if coef[j][a + 1] == 1 then wanted = true break end end
+		if wanted then
+			local bits = {}
+			for k = 1, n do if hasBit(a, k - 1) then bits[#bits + 1] = k end end
+			if #bits == 1 and not even then
+				src[a] = "A" .. bits[1]
+				single = true
+			else
+				used = used + 1
+				local ref = "term" .. a
+				addPart(ref, MODE.AND, 1, used, "terms")
+				for _, k in ipairs(bits) do wire("A" .. k, ref) end
+				src[a] = ref
+				multi = true
+			end
+		end
+	end
+
+	-- column 2 (and 3): outputs. A gate B is the XOR (or XNOR) itself.
+	local anyPart = false
+	for j = 1, nOut do if not bIsGate[j] then anyPart = true end end
+	local bColumn = anyPart and 3 or 2
+	local outCount = 0
+	for j = 1, nOut do
+		local b = "B" .. j
+		plan.moves[#plan.moves + 1] = { ref = b, x = bColumn, y = (j - 1) % LogicModule.WRAP, z = math.floor((j - 1) / LogicModule.WRAP) }
+		local mode = coef[j][1] == 1 and MODE.XNOR or MODE.XOR
+		local terms = 0
+		for a = 1, #m.rows - 1 do if coef[j][a + 1] == 1 then terms = terms + 1 end end
+		if coef[j][1] == 1 and terms == 0 then
+			-- a gate with no inputs is off in the game, XNOR too
+			plan.problems[#plan.problems + 1] = string.format("B%d is always on, which XOR style can't build (use ROM)", j - 1)
+		end
+		local target = b
+		if bIsGate[j] then
+			plan.modes[b] = mode
+		else
+			outCount = outCount + 1
+			target = "xo" .. j
+			addPart(target, mode, 2, outCount, "outs")
+			wire(target, b)
+		end
+		for a = 1, #m.rows - 1 do
+			if coef[j][a + 1] == 1 then wire(src[a], target) end
+		end
+	end
+
+	if even or not single then
+		plan.ticks = 2
+	elseif multi then
+		plan.ticks = "1-2"
+	else
+		plan.ticks = 1
+	end
 	return plan
 end
 
@@ -377,12 +563,23 @@ end
 function LogicModule.planText(plan, compress)
 	local c = plan.counts
 	local parts = {}
-	if c.buffers > 0 then parts[#parts + 1] = c.buffers .. " buffer(s)" end
-	if c.inverters > 0 then parts[#parts + 1] = c.inverters .. " inverter(s)" end
-	parts[#parts + 1] = c.rows .. " row AND(s)"
-	if c.ors > 0 then parts[#parts + 1] = c.ors .. " OR(s) for non-gate outputs" end
+	local style
+	if plan.style == "xor" then
+		style = "XOR (PPRM)"
+		parts[#parts + 1] = c.terms .. " term AND(s)"
+		if c.outs > 0 then parts[#parts + 1] = c.outs .. " XOR(s) for non-gate outputs" end
+	else
+		style = "ROM"
+		if c.buffers > 0 then parts[#parts + 1] = c.buffers .. " buffer(s)" end
+		if c.inverters > 0 then parts[#parts + 1] = c.inverters .. " inverter(s)" end
+		parts[#parts + 1] = c.rows .. " row AND(s)"
+		if c.ors > 0 then parts[#parts + 1] = c.ors .. " OR(s) for non-gate outputs" end
+	end
+	if plan.auto then
+		style = string.format("Auto picked %s (ROM %d, XOR %d gates)", plan.style == "xor" and "XOR" or "ROM", plan.auto.rom, plan.auto.xor)
+	end
 	local where = compress and string.format(", stacked in %d block(s)", plan.columns) or ""
-	return string.format("%s = %d new gate(s), %s ticks%s", table.concat(parts, " + "), c.gates, tostring(plan.ticks), where)
+	return string.format("%s: %s = %d new gate(s), %s ticks%s", style, table.concat(parts, " + "), c.gates, tostring(plan.ticks), where)
 end
 
 ---------------------------------------------------------------------------
@@ -552,6 +749,30 @@ function LogicModule.applyLut(bp, plan, refs, origin)
 		end
 	end
 	return childOf
+end
+
+-- Parts in a blueprint that break the game's wire limits: more than 255
+-- inputs or outputs. Counts every wire, the module's and the rest of the
+-- creation's. Returns { { child =, ins =, outs = } }.
+function LogicModule.wireLimits(bp)
+	local ins, byId = {}, {}
+	for _, body in ipairs(bp.bodies) do
+		for _, child in ipairs(body.childs or {}) do
+			local ctrl = child.controller
+			if ctrl and ctrl.id then
+				byId[ctrl.id] = child
+				for _, w in ipairs(ctrl.controllers or {}) do ins[w.id] = (ins[w.id] or 0) + 1 end
+			end
+		end
+	end
+	local out = {}
+	for id, child in pairs(byId) do
+		local nIn, nOut = ins[id] or 0, #(child.controller.controllers or {})
+		if nIn > LogicModule.MAX_WIRES or nOut > LogicModule.MAX_WIRES then
+			out[#out + 1] = { child = child, ins = nIn, outs = nOut }
+		end
+	end
+	return out
 end
 
 -- Which inside parts can go: the ones that only feed other removable parts
