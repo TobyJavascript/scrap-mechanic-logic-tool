@@ -8,13 +8,13 @@
 --
 -- Module table:
 --   kind      "lut"
---   inputs    { "A1", "A2", ... }      names, in group order
---   outputs   { "B1", ... }
+--   inputs    { "A0", "A1", ... }      names, in group order (shown from 0)
+--   outputs   { "B0", ... }
 --   rows      rows[address + 1] = { outs = { 0/1, ... }, settled = bool }
---             address = the inputs as a binary number with A1 the LOW bit
---             (A1 = 1, A2 = 2, A3 = 4 ...); outs[k] is output Bk. The table
---             shows bits like a binary number: highest on the left, A1 and
---             B1 on the right.
+--             address = the inputs as a binary number with the first input
+--             (A0) the LOW bit: A0 = 1, A1 = 2, A2 = 4 ...; outs[k] is the
+--             k-th output. The table shows bits like a binary number:
+--             highest on the left, A0 and B0 on the right.
 --   inside    number of parts between inputs and outputs
 --   extraIn   number of outside parts that feed the insides (not via A)
 --   extraOut  number of inside parts that also drive something outside B
@@ -88,8 +88,8 @@ end
 -- Builds a module from LogicGraph.truthTable rows (input 1 = low bit there too).
 function LogicModule.fromTruth(truthRows, nIn, nOut)
 	local m = { kind = "lut", inputs = {}, outputs = {}, rows = {} }
-	for k = 1, nIn do m.inputs[k] = "A" .. k end
-	for k = 1, nOut do m.outputs[k] = "B" .. k end
+	for k = 1, nIn do m.inputs[k] = "A" .. (k - 1) end
+	for k = 1, nOut do m.outputs[k] = "B" .. (k - 1) end
 	for _, row in ipairs(truthRows) do
 		local address = 0
 		for k = 1, nIn do
@@ -102,14 +102,14 @@ function LogicModule.fromTruth(truthRows, nIn, nOut)
 	return m
 end
 
--- Input bits of a row: bits[k] is input Ak (A1 = the low bit).
+-- Input bits of a row: bits[k] is the k-th input (the first = the low bit).
 function LogicModule.addressBits(m, address)
 	local bits = {}
 	for k = 1, #m.inputs do bits[k] = math.floor(address / 2 ^ (k - 1)) % 2 end
 	return bits
 end
 
--- bits[k] written highest first, like a binary number: { A1, A2, A3 } -> "A3A2A1"
+-- bits[k] written highest first, like a binary number: { A0, A1, A2 } -> "A2A1A0"
 local function binary(bits)
 	local s = {}
 	for k = #bits, 1, -1 do s[#s + 1] = tostring(bits[k]) end
@@ -143,7 +143,7 @@ function LogicModule.tableText(m, opts)
 
 	local function digits(n)
 		local s = {}
-		for k = n, 1, -1 do s[#s + 1] = tostring(k % 10) end
+		for k = n, 1, -1 do s[#s + 1] = tostring((k - 1) % 10) end
 		return table.concat(s)
 	end
 	lines[1] = hex(c.A) .. digits(nIn) .. reset .. "   |   " .. hex(c.B) .. digits(nOut) .. reset .. "      row"
@@ -202,7 +202,7 @@ function LogicModule.parseTable(m, text)
 				return nil, lineNo, "row " .. ins .. " is listed twice"
 			end
 			seen[address] = true
-			-- written highest first: the last digit is B1
+			-- written highest first: the last digit is B0
 			local o = {}
 			for k = 1, nOut do o[k] = tonumber(outs:sub(nOut - k + 1, nOut - k + 1)) end
 			rows[address + 1] = { outs = o, settled = true }

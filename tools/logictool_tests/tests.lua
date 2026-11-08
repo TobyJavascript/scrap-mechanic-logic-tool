@@ -186,7 +186,8 @@ end
 	check("no metatables in the game", lua("print(setmetatable, getmetatable, rawget)") == "nil nil nil")
 	check("pcall", lua("local ok, e = pcall(function() error('boom') end) print(ok, e)") == "false boom")
 	check("bit + getbit", lua("print(getbit(5, 0), getbit(5, 1), bit.band(6, 3))") == "1 0 2", lua("print(getbit(5, 0), getbit(5, 1), bit.band(6, 3))"))
-	check("parts print as names", lua("print(A[1], A[3].group, A[2].index)") == "A1 A 2")
+	-- shown from 0: A[1] is A0, and p.index is 0-based too
+	check("parts print as names", lua("print(A[1], A[3].group, A[2].index)") == "A0 A 1", lua("print(A[1], A[3].group, A[2].index)"))
 	check("globals", lua("x = 5 function add(a) return a + x end print(add(1))") == "6")
 	check("no sandbox escape", lua("print(os, io, load, loadstring, dofile, require, debug)") == "nil nil nil nil nil nil nil")
 end
@@ -440,7 +441,7 @@ do
 	local function outs(addr) return table.concat(m.rows[addr + 1].outs) end
 	check("module rows", outs(0) == "00" and outs(1) == "10" and outs(2) == "10" and outs(3) == "01",
 		outs(0) .. " " .. outs(1) .. " " .. outs(2) .. " " .. outs(3))
-	check("module names", table.concat(m.inputs, ",") == "A1,A2" and table.concat(m.outputs, ",") == "B1,B2")
+	check("module names", table.concat(m.inputs, ",") == "A0,A1" and table.concat(m.outputs, ",") == "B0,B1")
 	check("address bits", table.concat(LogicModule.addressBits(m, 2)) == "01" and table.concat(LogicModule.addressBits(m, 1)) == "10")
 	local size = LogicModule.lutSize(m)
 	check("lut size", size.inverters == 2 and size.rows == 3 and size.outputs == 2 and size.total == 7, size.total)
@@ -448,13 +449,13 @@ do
 	local text, unsettled = LogicModule.tableText(m)
 	local lines = {}
 	for l in (text .. "\n"):gmatch("(.-)\n") do lines[#lines + 1] = l end
-	check("table header", lines[1]:find("^21   |   21") ~= nil, lines[1])
+	check("table header", lines[1]:find("^10   |   10") ~= nil, lines[1])
 	-- row 2 = A2 on; outputs B2 B1 = 0 1 (sum on, carry off)
 	check("table row", lines[4] == "10   |   01      2", lines[4])
 	check("table row 1", lines[3] == "01   |   01      1", lines[3])
 	check("table settled", unsettled == 0 and #lines == 5, #lines)
 	local coloured = LogicModule.tableText(m, { colors = { A = "ff9900", B = "00c8ff", one = "ffffff", zero = "707070", text = "ffffff" } })
-	check("table colours", coloured:find("#ff990021#ffffff", 1, true) ~= nil and coloured:find("#ffffff1#7070700", 1, true) ~= nil, coloured)
+	check("table colours", coloured:find("#ff990010#ffffff", 1, true) ~= nil and coloured:find("#ffffff1#7070700", 1, true) ~= nil, coloured)
 end
 
 do

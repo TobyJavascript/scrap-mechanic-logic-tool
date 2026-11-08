@@ -375,10 +375,10 @@ local function labelFor(inter)
 	end
 end
 -- switch2 was removed and re-added, so it is now after switch1
-check("order labels on by default", labelFor(switch1) == "#ff9900A1" and labelFor(switch2) == "#ff9900A2",
+check("order labels on by default", labelFor(switch1) == "#ff9900A0" and labelFor(switch2) == "#ff9900A1",
 	tostring(labelFor(switch1)) .. " " .. tostring(labelFor(switch2)))
 step("reverse A", function() tool:cl_onButton("reverse") end)
-check("order labels follow reverse", labelFor(switch2) == "#ff9900A1", tostring(labelFor(switch2)))
+check("order labels follow reverse", labelFor(switch2) == "#ff9900A0", tostring(labelFor(switch2)))
 step("reverse A back", function() tool:cl_onButton("reverse") end)
 step("right click", rightClick)
 check("active B", tool.cl.active == "B")
@@ -658,7 +658,7 @@ end)
 check("unchanged table = as loaded", tool.cl.moduleRows == nil and moduleInfo():find("Table: as loaded", 1, true), moduleInfo())
 step("reset table", function() press("resetModule") end)
 check("reset", tool.cl.moduleRows == nil and tool.cl.moduleError == nil and moduleInfo():find("Table: as loaded", 1, true), moduleInfo())
-check("module types", moduleText():find("A1 ", 1, true) and moduleText():find("B1 AND", 1, true), moduleText())
+check("module types", moduleText():find("A0 Switch", 1, true) and moduleText():find("B0 AND", 1, true), moduleText())
 step("module needs A and B", function() setGroup("B", {}) press("loadModule") end)
 check("module error shown", moduleText():find("Load needs the inputs in A", 1, true), moduleText())
 -- a part on another creation

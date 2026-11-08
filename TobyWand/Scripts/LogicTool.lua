@@ -117,6 +117,11 @@ local PICK_ALERT = {
 	setting = "same type and gate mode / timer time", settingColor = "same gate mode / timer time and colour",
 }
 
+-- Parts are numbered from 0 for the player (A0, A1 ...), like bits: A0 is
+-- worth 1, A1 2, A2 4. Lists inside the code stay 1-based (Lua), so the k-th
+-- part of a list is shown as k - 1. Every name goes through partName.
+local function partName(g, k) return g .. (k - 1) end
+
 local HELP_TEXT = [[CONTROLS
   Click / drag      add to the active group / box select
   Right click       next group
@@ -126,7 +131,9 @@ local HELP_TEXT = [[CONTROLS
 
 SCRIPTS ARE LUA
 A, B, C are lists of the parts you selected, in order.
-A part p has: p.x p.y p.z (blocks), p.group, p.index,
+Parts are numbered from 0, but Lua lists start at 1:
+  A[1] is A0, A[2] is A1 ... and A[#A] is the last one.
+A part p has: p.x p.y p.z (blocks), p.group, p.index (0 = first),
   p.kind ("gate" "timer" "input" "output"),
   p.mode ("AND" "OR" "XOR" "NAND" "NOR" "XNOR"),
   p.delay (ticks), p.color ("df7f00")
@@ -581,8 +588,8 @@ function LogicTool:sv_lutPrepare(data)
 	local refs = { body = 1, A = {}, B = {}, remove = {} }
 	for k, id in ipairs(A) do refs.A[k] = childs[id] end
 	for k, id in ipairs(B) do refs.B[k] = childs[id] end
-	for k = 1, #A do if not refs.A[k] then return nil, "Couldn't find A" .. k .. " in the blueprint" end end
-	for k = 1, #B do if not refs.B[k] then return nil, "Couldn't find B" .. k .. " in the blueprint" end end
+	for k = 1, #A do if not refs.A[k] then return nil, "Couldn't find " .. partName("A", k) .. " in the blueprint" end end
+	for k = 1, #B do if not refs.B[k] then return nil, "Couldn't find " .. partName("B", k) .. " in the blueprint" end end
 	local removeInters = {}
 	for id in pairs(removeSet) do
 		local child = childs[id]
@@ -595,8 +602,8 @@ function LogicTool:sv_lutPrepare(data)
 	end
 
 	local m = { kind = "lut", inputs = {}, outputs = {}, rows = {} }
-	for k = 1, #A do m.inputs[k] = "A" .. k end
-	for k = 1, #B do m.outputs[k] = "B" .. k end
+	for k = 1, #A do m.inputs[k] = partName("A", k) end
+	for k = 1, #B do m.outputs[k] = partName("B", k) end
 	for i, outs in ipairs(rows) do
 		local o = {}
 		for k = 1, #B do o[k] = outs[k] == 1 and 1 or 0 end
@@ -804,7 +811,7 @@ function LogicTool:sv_analyze(data, player)
 				if not rows then
 					reply.error = terr
 				else
-					-- like a binary number: highest first, so A1 and B1 are on the right
+					-- like a binary number: highest first, so A0 and B0 are on the right
 					reply.rows = {}
 					for _, row in ipairs(rows) do
 						local a, b = {}, {}
@@ -870,7 +877,7 @@ function LogicTool:client_onCreate()
 		lines = {},                            -- effect pool
 		lineUuid = {},                         -- mesh shown by each pooled effect
 		labels = {},                           -- world gui pool
-		labelMode = 2,                         -- order numbers (A1, A2 ...) by default
+		labelMode = 2,                         -- order numbers (A0, A1 ...) by default
 		showLines = false,
 		typeLabels = {},                       -- [interId] = "AND"
 		partInfo = {},                         -- [interId] = { kind, mode, delay } for scripts
@@ -1343,9 +1350,9 @@ function LogicTool:client_onEquippedUpdate(primary, secondary, forceBuild)
 	if logicInter then
 		local idx = self:cl_indexOf(g, logicInter)
 		if idx then
-			hint = "Remove " .. GROUP_HEX[g] .. g .. idx .. "#ffffff"
+			hint = "Remove " .. GROUP_HEX[g] .. partName(g, idx) .. "#ffffff"
 		else
-			hint = "Add as " .. GROUP_HEX[g] .. g .. (#self.cl.groups[g] + 1) .. "#ffffff"
+			hint = "Add as " .. GROUP_HEX[g] .. partName(g, #self.cl.groups[g] + 1) .. "#ffffff"
 		end
 	else
 		hint = "Select into " .. GROUP_HEX[g] .. g .. "#ffffff (drag = " .. BOX_NAMES[BOX_MODES[self.cl.boxMode]] .. ")"
@@ -1768,7 +1775,7 @@ function LogicTool:cl_onAnalysis(r)
 		for _, inter in ipairs(r.warn or {}) do self:cl_flag(inter, COLOR_WARN) end
 
 	elseif r.kind == "truth" then
-		add("TRUTH TABLE  (A inputs  |  B outputs, A1 and B1 on the right)")
+		add("TRUTH TABLE  (A inputs  |  B outputs, A0 and B0 on the right)")
 		for _, row in ipairs(r.rows or {}) do add(row) end
 		add("")
 		add("Simulated from all-off for each row; memory circuits may differ in game.")
@@ -1795,7 +1802,7 @@ local MODULE_COLORS = { A = GROUP_HEX.A:sub(2), B = GROUP_HEX.B:sub(2), one = "f
 
 local function listText(prefix, types)
 	local out = {}
-	for k, t in ipairs(types or {}) do out[k] = prefix .. k .. " " .. t end
+	for k, t in ipairs(types or {}) do out[k] = partName(prefix, k) .. " " .. t end
 	return table.concat(out, ",  ")
 end
 
@@ -1850,7 +1857,7 @@ function LogicTool:cl_showModuleInfo(errorText)
 		add("Build LUT shows a preview first. Nothing changes until Apply build; Undo build puts it back.")
 	end
 	add("")
-	add(string.format("Rows are binary numbers: A%d..A1 | B%d..B1, so A1 and B1 are the rightmost digits. Edit the output digits.", #m.inputs, #m.outputs))
+	add(string.format("Rows are binary numbers: A%d..A0 | B%d..B0, so A0 and B0 are the rightmost digits. Edit the output digits.", #m.inputs - 1, #m.outputs - 1))
 	self.cl.moduleInfoText = table.concat(lines, "\n")
 	gui:setText("moduleInfo", self.cl.moduleInfoText)
 end
@@ -2491,7 +2498,7 @@ function LogicTool:cl_labelCandidates()
 			if sm.exists(inter) then
 				local text
 				if mode == "index" then
-					text = GROUP_HEX[g] .. g .. i
+					text = GROUP_HEX[g] .. partName(g, i)
 					local d = self.cl.delayLabels[inter.id]
 					if d and not seen[inter.id] then text = text .. " #ffffff" .. d end
 				elseif not seen[inter.id] then
@@ -2528,7 +2535,7 @@ function LogicTool:cl_pickLabels()
 	end
 	table.sort(near, function(a, b)
 		if math.abs(a.d - b.d) > 0.001 then return a.d < b.d end
-		return a.i < b.i -- same spot: keep group order, so stacked labels read A1 under A2
+		return a.i < b.i -- same spot: keep group order, so stacked labels read A0 under A1
 	end)
 	local shown = {}
 	for k = 1, math.min(#near, MAX_LABELS) do shown[k] = near[k].e end

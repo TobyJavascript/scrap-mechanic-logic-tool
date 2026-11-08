@@ -1133,9 +1133,10 @@ function LogicScript.run(src, groups)
 		if #output < MAX_OUTPUT then output[#output + 1] = line end
 	end
 
+	-- index is 0-based like the names the player sees (A[1] is A0)
 	local function makePart(node, gname, index)
 		local p = {
-			group = gname, index = index, id = node.key,
+			group = gname, index = index - 1, id = node.key,
 			x = node.x or 0, y = node.y or 0, z = node.z or 0,
 			type = node.type, kind = node.kind, mode = node.mode, delay = node.delay, color = node.color,
 		}
