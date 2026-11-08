@@ -1350,8 +1350,10 @@ function LogicTool:client_onEquippedUpdate(primary, secondary, forceBuild)
 	else
 		hint = "Select into " .. GROUP_HEX[g] .. g .. "#ffffff (drag = " .. BOX_NAMES[BOX_MODES[self.cl.boxMode]] .. ")"
 	end
-	sm.gui.setInteractionText("", sm.gui.getKeyBinding("Attack", true), hint,
-		sm.gui.getKeyBinding("Create", true), "Next group")
+	-- "Create" is the left mouse button (the game's tools use it for their main
+	-- action), "Attack" the right one
+	sm.gui.setInteractionText("", sm.gui.getKeyBinding("Create", true), hint,
+		sm.gui.getKeyBinding("Attack", true), "Next group")
 
 	-- left mouse: click = toggle, drag = box
 	if primary == sm.tool.interactState.start then
