@@ -111,9 +111,9 @@ def main_layout():
     # Connect
     kids.append(section(y, "CONNECT   A  >  B"))
     y += 0.032
-    kids += button_row(y, [("allToAll", "All > All"), ("zip", "Zip 1:1"), ("chain", "Chain A"), ("undo", "Undo")])
+    kids += button_row(y, [("allToAll", "All > All"), ("zip", "Zip 1:1"), ("chain", "Chain: A"), ("undo", "Undo")])
     y += ROW_H + GAP
-    kids += button_row(y, [("cut", "Cut A > B"), ("clearOut", "Clear A outputs"), ("clearIn", "Clear B inputs")])
+    kids += button_row(y, [("wireMode", "Mode: Connect"), ("clearIn", "Clear inputs: A"), ("clearOut", "Clear outputs: A")])
     y += ROW_H + GAP + 0.005
 
     # Analyse

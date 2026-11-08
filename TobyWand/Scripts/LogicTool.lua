@@ -88,7 +88,11 @@ local BOX_NORMAL = { xy = "z", xz = "y", yz = "x" }
 local LABEL_MODES = { "off", "index", "type", "delay" }
 local LABEL_NAMES = { off = "Labels: off", index = "Labels: order", type = "Labels: type", delay = "Labels: delay" }
 
-local CONNECT_MODES = { allToAll = "All > All", zip = "Zip 1:1", chain = "Chain A" }
+local CONNECT_MODES = { allToAll = "All > All", zip = "Zip 1:1", chain = "Chain" }
+-- What All > All / Zip / Chain do: add wires, remove them, or toggle each pair.
+local WIRE_MODES = { "connect", "cut", "flip" }
+local WIRE_NAMES = { connect = "Mode: Connect", cut = "Mode: Cut", flip = "Mode: Flip" }
+local WIRE_VERBS = { connect = "Connect", cut = "Cut", flip = "Flip" }
 
 -- what F+click picks: parts in the creation that match the one clicked
 local PICK_MODES = { "typeColor", "type", "color", "setting", "settingColor" }
@@ -119,6 +123,7 @@ Wiring (a and b can be one part or a list):
   connect(a, b)          every a to every b
   connect(a, b, "zip")   a[1]>b[1], a[2]>b[2] ...
   cut(a, b)              remove connections
+  flip(a, b)             connect if not wired, cut if wired
   chain(list)            list[1]>list[2]>list[3] ...
   clearInputs(a)  clearOutputs(a)
 
@@ -198,6 +203,9 @@ function LogicTool:sv_applyOps(data, player)
 
 	for _, op in ipairs(data.ops or {}) do
 		local p, c, kind = op.p, op.c, op.kind
+		if kind == "flip" and sm.exists(p) and c ~= nil and sm.exists(c) then
+			kind = connected(p, c) and "cut" or "connect"
+		end
 		if not sm.exists(p) or (c ~= nil and not sm.exists(c)) then
 			pending.failed = pending.failed + 1
 		elseif kind == "connect" then
@@ -590,6 +598,7 @@ function LogicTool:client_onCreate()
 		lastConnect = "allToAll",
 		boxMode = 1,
 		pickMode = 1,
+		wireMode = 1,
 		probe = nil,                           -- { entries =, reverse =, origin =, ... }
 		labelShown = {},                       -- entries picked for labels
 		labelTimer = 0,
@@ -610,7 +619,7 @@ function LogicTool:client_onCreate()
 
 	local gui = sm.gui.createGuiFromLayout("$CONTENT_DATA/Gui/Layouts/LogicTool.layout", false)
 	for _, name in ipairs({ "close", "active", "clearActive", "clearAll", "undo", "sortX", "sortY", "sortZ", "reverse",
-		"allToAll", "zip", "chain", "cut", "clearOut", "clearIn", "timing", "truth", "lint", "lines", "labels",
+		"allToAll", "zip", "chain", "wireMode", "clearOut", "clearIn", "timing", "truth", "lint", "lines", "labels",
 		"clearMarks", "example", "run", "help", "pickBy", "probeFwd", "probeBack", "openScript", "closeScript", "boxMode", "format" }) do
 		gui:setButtonCallback(name, "cl_onButton")
 	end
@@ -1168,10 +1177,15 @@ end
 
 function LogicTool:cl_connectMode(mode)
 	local A, B = self:cl_inters("A"), self:cl_inters("B")
+	local wire = WIRE_MODES[self.cl.wireMode]
 	local ops = {}
+	local label = CONNECT_MODES[mode]
 	if mode == "chain" then
-		for i = 1, #A - 1 do ops[#ops + 1] = { kind = "connect", p = A[i], c = A[i + 1] } end
-		if #A < 2 then sm.gui.displayAlertText("Chain needs 2+ parts in A", 2) return end
+		local g = self.cl.active
+		local list = self:cl_inters(g)
+		if #list < 2 then sm.gui.displayAlertText("Chain needs 2+ parts in " .. g, 2) return end
+		for i = 1, #list - 1 do ops[#ops + 1] = { kind = wire, p = list[i], c = list[i + 1] } end
+		label = "Chain " .. g
 	else
 		if #A == 0 or #B == 0 then
 			sm.gui.displayAlertText("Select parts in A and B first", 2)
@@ -1181,17 +1195,17 @@ function LogicTool:cl_connectMode(mode)
 			if #A ~= #B then
 				chat(string.format("Zip: A has %d and B has %d parts; pairing the first %d", #A, #B, math.min(#A, #B)))
 			end
-			for i = 1, math.min(#A, #B) do ops[#ops + 1] = { kind = "connect", p = A[i], c = B[i] } end
+			for i = 1, math.min(#A, #B) do ops[#ops + 1] = { kind = wire, p = A[i], c = B[i] } end
 		else
 			for _, a in ipairs(A) do
 				for _, b in ipairs(B) do
-					if a ~= b then ops[#ops + 1] = { kind = "connect", p = a, c = b } end
+					if a ~= b then ops[#ops + 1] = { kind = wire, p = a, c = b } end
 				end
 			end
 		end
 	end
 	self.cl.lastConnect = mode
-	self:cl_sendOps(ops, CONNECT_MODES[mode])
+	self:cl_sendOps(ops, WIRE_VERBS[wire] .. " " .. label)
 end
 
 function LogicTool:cl_onOpsDone(r)
@@ -1602,6 +1616,11 @@ function LogicTool:cl_refreshGui()
 	gui:setText("lines", self.cl.showLines and "Lines: on" or "Lines: off")
 	gui:setText("labels", LABEL_NAMES[LABEL_MODES[self.cl.labelMode]])
 	gui:setText("pickBy", PICK_NAMES[PICK_MODES[self.cl.pickMode]])
+	gui:setText("wireMode", WIRE_NAMES[WIRE_MODES[self.cl.wireMode]])
+	-- group letter last and coloured, like "Active: A", so no colour reset is needed
+	gui:setText("chain", "Chain: " .. GROUP_HEX[g] .. g)
+	gui:setText("clearIn", "Clear inputs: " .. GROUP_HEX[g] .. g)
+	gui:setText("clearOut", "Clear outputs: " .. GROUP_HEX[g] .. g)
 	gui:setText("boxMode", "Box (Q): " .. BOX_NAMES[BOX_MODES[self.cl.boxMode]])
 	gui:setText("openScript", self.cl.scriptOpen and "Hide script" or "< Script")
 	gui:setVisible("scriptWindow", self.cl.scriptOpen)
@@ -1634,22 +1653,21 @@ function LogicTool:cl_onButton(name)
 		sm.gui.displayAlertText("Reversed " .. self.cl.active, 1.5)
 	elseif CONNECT_MODES[name] then
 		self:cl_connectMode(name)
-	elseif name == "cut" then
-		local ops = {}
-		for _, a in ipairs(self:cl_inters("A")) do
-			for _, b in ipairs(self:cl_inters("B")) do
-				ops[#ops + 1] = { kind = "cut", p = a, c = b }
-			end
+	elseif name == "wireMode" then
+		self.cl.wireMode = self.cl.wireMode % #WIRE_MODES + 1
+		local wire = WIRE_MODES[self.cl.wireMode]
+		sm.gui.displayAlertText(wire == "connect" and "Buttons add wires"
+			or wire == "cut" and "Buttons remove wires" or "Buttons toggle wires", 1.5)
+	elseif name == "clearOut" or name == "clearIn" then
+		local g = self.cl.active
+		local list = self:cl_inters(g)
+		if #list == 0 then
+			sm.gui.displayAlertText("Group " .. g .. " is empty", 2)
+			return
 		end
-		self:cl_sendOps(ops, "Cut A > B")
-	elseif name == "clearOut" then
 		local ops = {}
-		for _, a in ipairs(self:cl_inters("A")) do ops[#ops + 1] = { kind = "clearOut", p = a } end
-		self:cl_sendOps(ops, "Clear A outputs")
-	elseif name == "clearIn" then
-		local ops = {}
-		for _, b in ipairs(self:cl_inters("B")) do ops[#ops + 1] = { kind = "clearIn", p = b } end
-		self:cl_sendOps(ops, "Clear B inputs")
+		for _, p in ipairs(list) do ops[#ops + 1] = { kind = name, p = p } end
+		self:cl_sendOps(ops, "Clear " .. g .. (name == "clearIn" and " inputs" or " outputs"))
 	elseif name == "timing" or name == "lint" or name == "truth" then
 		self:cl_requestAnalysis(name)
 	elseif name == "lines" then

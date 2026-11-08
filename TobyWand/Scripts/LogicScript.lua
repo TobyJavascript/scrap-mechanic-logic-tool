@@ -1192,6 +1192,7 @@ function LogicScript.run(src, groups)
 
 	env.connect = function(from, to, mode) pairUp("connect", from, to, mode, "connect") end
 	env.cut = function(from, to, mode) pairUp("cut", from, to, mode, "cut") end
+	env.flip = function(from, to, mode) pairUp("flip", from, to, mode, "flip") end
 	env.chain = function(list)
 		local l = parts(list, "chain")
 		for i = 1, #l - 1 do emit("connect", l[i], l[i + 1]) end
@@ -1323,7 +1324,7 @@ LogicScript.THEME = {
 	A = "#ff9900", B = "#00c8ff", C = "#d040ff",
 }
 local API_NAMES = {}
-for w in ("connect cut chain clearInputs clearOutputs sort reverse slice filter join getbit print"):gmatch("%S+") do
+for w in ("connect cut flip chain clearInputs clearOutputs sort reverse slice filter join getbit print"):gmatch("%S+") do
 	API_NAMES[w] = true
 end
 local LIB_NAMES = {}

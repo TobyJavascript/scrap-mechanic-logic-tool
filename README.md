@@ -8,9 +8,10 @@ creations faster.
 - **Groups**: select logic parts into groups A, B, C… by clicking or box
   dragging. Press Q to switch the box between full 3D and an XY, XZ or YZ layer,
   like the game's block drag. Parts show their order number in the group.
-- **Bulk wiring**: connect A to B all-to-all, zip (A1→B1, A2→B2…) or as a
-  chain. You can also cut wires and clear a group's inputs or outputs, and Undo
-  reverts the last action.
+- **Bulk wiring**: wire A to B all-to-all or zip (A1→B1, A2→B2…), or chain
+  the active group. A mode setting picks whether those buttons connect, cut or
+  flip (toggle) the wires. You can also clear the active group's inputs or
+  outputs, and Undo reverts the last action.
 - **Sorting**: sort a group by X, Y or Z, or reverse it.
 - **Pick similar**: F + click selects every matching part, by type, colour,
   gate mode or timer setting.

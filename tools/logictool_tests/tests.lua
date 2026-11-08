@@ -80,6 +80,8 @@ do
 	local A, B = group("a", 4), group("b", 1)
 	local ok, res = run("connect(A[#A], B[1])\ncut(A[1], B)", { A = A, B = B })
 	check("last + cut", ok and opsString(res) == "connect a4>b1, cut a1>b1", ok and opsString(res) or res)
+	ok, res = run("flip(A, B)\nflip(slice(A, 1, 1), B, \"zip\")", { A = A, B = B })
+	check("flip", ok and opsString(res) == "flip a1>b1, flip a2>b1, flip a3>b1, flip a4>b1", ok and opsString(res) or res)
 end
 
 do

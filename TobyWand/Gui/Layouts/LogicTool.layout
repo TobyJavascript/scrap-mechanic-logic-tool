@@ -79,7 +79,7 @@
             <Property key="TextAlign" value="Center"/>
         </Widget>
         <Widget type="Button" skin="PrimaryButton" position_real="0.5060 0.2830 0.2260 0.0400" name="chain">
-            <Property key="Caption" value="Chain A"/>
+            <Property key="Caption" value="Chain: A"/>
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>
@@ -88,18 +88,18 @@
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.0300 0.3310 0.3053 0.0400" name="cut">
-            <Property key="Caption" value="Cut A &gt; B"/>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.0300 0.3310 0.3053 0.0400" name="wireMode">
+            <Property key="Caption" value="Mode: Connect"/>
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.3473 0.3310 0.3053 0.0400" name="clearOut">
-            <Property key="Caption" value="Clear A outputs"/>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.3473 0.3310 0.3053 0.0400" name="clearIn">
+            <Property key="Caption" value="Clear inputs: A"/>
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.6647 0.3310 0.3053 0.0400" name="clearIn">
-            <Property key="Caption" value="Clear B inputs"/>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.6647 0.3310 0.3053 0.0400" name="clearOut">
+            <Property key="Caption" value="Clear outputs: A"/>
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>
