@@ -75,6 +75,10 @@ local MAX_GRAPH_NODES = 20000
 local PROBE_NET_LIMIT = 1500   -- probe results sent to the client
 local MAX_LABELS = 200         -- world labels shown at once (nearest first)
 local LABEL_REFRESH = 0.25     -- seconds between "which labels are nearest" updates
+-- Type labels come from the server. Ask again soon when a selected part has
+-- none yet, and now and then anyway so a changed gate mode shows up.
+local TYPE_ASK_MISSING = 0.5
+local TYPE_ASK_REFRESH = 3
 local BOX_MARGIN = 0.15
 local DRAG_START = 0.3
 
@@ -603,6 +607,7 @@ function LogicTool:client_onCreate()
 		probe = nil,                           -- { entries =, reverse =, origin =, ... }
 		labelShown = {},                       -- entries picked for labels
 		labelTimer = 0,
+		typeAge = 0,                           -- seconds since type labels were last asked for
 		exampleIndex = 0,
 		script = "",
 		leftWindow = nil,                      -- "script" or "settings": the window shown on the left
@@ -1154,6 +1159,13 @@ function LogicTool:cl_inters(g)
 		if sm.exists(e.inter) then out[#out + 1] = e.inter end
 	end
 	return out
+end
+
+function LogicTool:cl_hasSelection()
+	for _, g in ipairs(GROUPS) do
+		if #self.cl.groups[g] > 0 then return true end
+	end
+	return false
 end
 
 function LogicTool:cl_sendOps(ops, label)
@@ -1891,7 +1903,11 @@ function LogicTool:cl_labelCandidates()
 					if d and not seen[inter.id] then text = text .. " #ffffff" .. d end
 				elseif not seen[inter.id] then
 					if mode == "type" then
-						text = self.cl.typeLabels[inter.id] or "..."
+						text = self.cl.typeLabels[inter.id]
+						if not text then
+							text = "..."
+							self.cl.typeMissing = true
+						end
 					else
 						text = self.cl.delayLabels[inter.id]
 					end
@@ -1928,9 +1944,18 @@ end
 
 function LogicTool:cl_updateLabels(dt)
 	self.cl.labelTimer = self.cl.labelTimer - (dt or 0)
+	self.cl.typeAge = self.cl.typeAge + (dt or 0)
 	if self.cl.labelTimer <= 0 then
 		self.cl.labelTimer = LABEL_REFRESH
+		self.cl.typeMissing = false
 		self:cl_pickLabels()
+		if LABEL_MODES[self.cl.labelMode] == "type" and not self.cl.probe then
+			local age = self.cl.typeAge
+			if (self.cl.typeMissing and age >= TYPE_ASK_MISSING) or (age >= TYPE_ASK_REFRESH and self:cl_hasSelection()) then
+				self.cl.typeAge = 0
+				self:cl_requestAnalysis("info")
+			end
+		end
 	end
 
 	local n = 1

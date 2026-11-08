@@ -463,6 +463,13 @@ check("lint text", result():find("CHECK", 1, true), result())
 step("truth", function() press("truth") end)
 check("truth text", result():find("TRUTH TABLE", 1, true), result())
 step("labels cycle", function() for _ = 1, 4 do press("labels") tool:client_onUpdate(0.016) end end)
+step("type labels: missing ones are fetched", function()
+	press("labels") -- order -> type
+	tool.cl.typeLabels = {}  -- as if these parts were selected after switching to type
+	tool:client_onUpdate(0.3) tool:client_onUpdate(0.3) tool:client_onUpdate(0.3)
+end)
+check("type label fetched", labelFor(switch1) ~= nil and labelFor(switch1) ~= "...", tostring(labelFor(switch1)))
+step("type labels back to order", function() for _ = 1, 3 do press("labels") end tool:client_onUpdate(0.3) end)
 step("lines on", function() press("lines") tool:client_onUpdate(0.016) end)
 check("line effects drawn", (function()
 	local n = 0
