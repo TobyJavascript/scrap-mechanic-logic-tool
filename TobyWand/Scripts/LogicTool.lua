@@ -74,7 +74,7 @@ local OPS_PER_PACKET = 300
 local NET_LIST_LIMIT = 400
 local MODULE_MAX_OUTPUTS = 32
 local LUT_STYLES = { "auto", "rom", "xor" }
-local LUT_STYLE_NAMES = { auto = "Auto (fewest gates)", rom = "ROM", xor = "XOR (PPRM)" }
+local LUT_STYLE_NAMES = { auto = "Auto", rom = "ROM", xor = "XOR (PPRM)" }
 -- buttons that open a window on the left (one at a time)
 local LEFT_WINDOWS = { openScript = "script", openSettings = "settings", openModule = "module" }
 local MODULE_HINT = "Put the inputs in A and the outputs in B (in order), then press Load.\n\n"
@@ -576,9 +576,28 @@ function LogicTool:sv_lutPrepare(data)
 	local graph, inters = self:sv_buildGraph(Ain)
 	local A, B = idsOf(Ain), idsOf(Bin)
 	local inside = LogicModule.inside(graph, A, B)
-	local removeIds = LogicModule.removable(graph, inside, B)
-	local removeSet = {}
-	for _, id in ipairs(removeIds) do removeSet[id] = true end
+	local function onHome(id)
+		local inter = inters[id]
+		return inter ~= nil and sm.exists(inter) and inter:getShape().body.id == home.id
+	end
+
+	-- the old circuit goes completely, or stays completely: half of it would
+	-- only be clutter wired to A
+	local circuit = LogicModule.oldCircuit(graph, inside, A, B)
+	local inCircuit, otherBody = {}, false
+	for _, id in ipairs(circuit.parts) do
+		inCircuit[id] = true
+		if not onHome(id) then otherBody = true end
+	end
+	local keepReason
+	if #circuit.usedOutside > 0 then
+		keepReason = string.format("it also drives %d other part(s)", #circuit.usedOutside)
+	elseif otherBody then
+		keepReason = "part of it is on another body"
+	end
+
+	-- gates whose only job is feeding A move along with A
+	local helpers = LogicModule.helpers(graph, A, inCircuit, onHome)
 
 	local lifted = home:isOnLift()
 	local okExp, bp = pcall(sm.creation.exportToTable, home, true, lifted)
@@ -587,19 +606,34 @@ function LogicTool:sv_lutPrepare(data)
 	if not okOld then return nil, "Couldn't read the creation's blueprint" end
 
 	local childs = blueprintChilds(home, bp)
-	local refs = { body = 1, A = {}, B = {}, remove = {} }
+	local refs = { body = 1, A = {}, B = {}, remove = {}, helpers = {} }
 	for k, id in ipairs(A) do refs.A[k] = childs[id] end
 	for k, id in ipairs(B) do refs.B[k] = childs[id] end
 	for k = 1, #A do if not refs.A[k] then return nil, "Couldn't find " .. partName("A", k) .. " in the blueprint" end end
 	for k = 1, #B do if not refs.B[k] then return nil, "Couldn't find " .. partName("B", k) .. " in the blueprint" end end
-	local removeInters = {}
-	for id in pairs(removeSet) do
-		local child = childs[id]
-		local inter = inters[id]
-		-- a part on another body of the creation can't be removed this way: keep it
-		if child and inter and inter:getShape().body.id == home.id then
+	local removeInters, keptInters = {}, {}
+	for _, id in ipairs(circuit.parts) do
+		local child, inter = childs[id], inters[id]
+		if keepReason or not child then
+			if inter then keptInters[#keptInters + 1] = inter end
+		else
 			refs.remove[child] = true
 			removeInters[#removeInters + 1] = inter
+		end
+	end
+	for _, h in ipairs(helpers) do
+		if childs[h.id] then refs.helpers[#refs.helpers + 1] = { child = childs[h.id], input = h.input } end
+	end
+	-- unwired gates hidden in the removed cluster's blocks go with it
+	if not keepReason then
+		local interOf = {}
+		for id, child in pairs(childs) do interOf[child] = inters[id] end
+		for _, child in ipairs(LogicModule.strayInCells(bp, refs.remove)) do
+			local inter = interOf[child]
+			if inter and onHome(inter.id) then
+				refs.remove[child] = true
+				removeInters[#removeInters + 1] = inter
+			end
 		end
 	end
 
@@ -620,7 +654,7 @@ function LogicTool:sv_lutPrepare(data)
 	local refShape = Ain[1]:getShape()
 	local refCell = LogicModule.cellOf(refs.A[1])
 	local origin = LogicModule.placeOnTop(bp.bodies[1])
-	local childOf = LogicModule.applyLut(bp, plan, refs, origin)
+	local childOf, moves = LogicModule.applyLut(bp, plan, refs, origin)
 
 	-- the game's wire limits, counting the rest of the creation's wires too
 	local over = LogicModule.wireLimits(bp)
@@ -634,9 +668,10 @@ function LogicTool:sv_lutPrepare(data)
 	end
 
 	return {
-		bp = bp, oldBp = oldBp, home = home, lifted = lifted, plan = plan, childOf = childOf,
+		bp = bp, oldBp = oldBp, home = home, lifted = lifted, plan = plan, childOf = childOf, moves = moves,
 		origin = origin, refCell = refCell, refPos = refShape.worldPosition, rot = home.worldRotation,
-		removeInters = removeInters, kept = #inside.parts - #removeInters, nA = #A, nB = #B,
+		removeInters = removeInters, keptInters = keptInters, keepReason = keepReason,
+		helpers = #refs.helpers, nA = #A, nB = #B,
 	}
 end
 
@@ -659,12 +694,14 @@ function LogicTool:sv_lutBuild(data, player)
 			for _, p in ipairs(ctx.plan.parts) do
 				cells[#cells + 1] = { pos = world(LogicModule.toBody(o, p.x, p.y, p.z)), kind = "new" }
 			end
-			for _, mv in ipairs(ctx.plan.moves) do
-				cells[#cells + 1] = { pos = world(LogicModule.toBody(o, mv.x, mv.y, mv.z)), kind = mv.ref:sub(1, 1) }
+			for _, mv in ipairs(ctx.moves) do
+				-- helpers (H...) travel with A, so they get A's colour
+				local kind = mv.ref:sub(1, 1)
+				cells[#cells + 1] = { pos = world(LogicModule.toBody(o, mv.x, mv.y, mv.z)), kind = kind == "H" and "A" or kind }
 			end
 			self.network:sendToClient(player, "cl_onLutPreview", {
-				cells = cells, rot = ctx.rot, remove = ctx.removeInters, kept = ctx.kept,
-				gates = ctx.plan.counts.gates, lifted = ctx.lifted,
+				cells = cells, rot = ctx.rot, remove = ctx.removeInters, keep = ctx.keptInters, keepReason = ctx.keepReason,
+				helpers = ctx.helpers, gates = ctx.plan.counts.gates, lifted = ctx.lifted,
 			})
 			return
 		end
@@ -2022,15 +2059,23 @@ function LogicTool:cl_onLutPreview(r)
 	end
 	self.cl.lutPreview = p
 	for _, inter in ipairs(r.remove or {}) do self:cl_flag(inter, COLOR_WARN) end
+	for _, inter in ipairs(r.keep or {}) do self:cl_flag(inter, COLOR_GLITCH) end
 
 	self:cl_showModuleInfo()
 	local lines = {
 		"",
-		"#80ff80BUILD PREVIEW#ffffff (green = new gates, orange/blue = where A/B go, red = removed)",
-		string.format("%d new gate(s), %d old part(s) removed%s. The module goes on top of the creation.",
-			r.gates or 0, #(r.remove or {}), (r.kept or 0) > 0 and string.format(", %d kept (they feed other things)", r.kept) or ""),
-		"Press Apply build to rebuild the creation, or Cancel.",
+		"#80ff80BUILD PREVIEW#ffffff (green = new gates, orange/blue = where A/B go, red = removed, yellow = kept)",
+		string.format("%d new gate(s), %d old part(s) removed. The module goes on top of the creation.",
+			r.gates or 0, #(r.remove or {})),
 	}
+	if r.keepReason then
+		lines[#lines + 1] = string.format("#ffee00The old circuit (%d part(s)) stays whole: %s.#ffffff Its wires into B are cut.",
+			#(r.keep or {}), r.keepReason)
+	end
+	if (r.helpers or 0) > 0 then
+		lines[#lines + 1] = string.format("%d gate(s) that only feed A move along with A.", r.helpers)
+	end
+	lines[#lines + 1] = "Press Apply build to rebuild the creation, or Cancel."
 	if (r.gates or 0) == 0 then
 		lines[#lines + 1] = "#ff6060The table is all 0: this build only removes the old logic and builds nothing.#ffffff"
 	end

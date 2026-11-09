@@ -23,7 +23,9 @@ creations faster.
 - **Modules and LUTs**: load the logic between A (inputs) and B (outputs) as
   a table in the module window. Edit the outputs, and **Build LUT** rebuilds
   that logic as a clean lookup table: A in a line, inverters, one AND per row,
-  B as the ORs. You see a ghost preview first; afterwards the tool reloads the
+  B as the ORs. The old circuit is removed as a whole (or kept whole when
+  something else still uses it), and gates that only feed A move along with
+  it. You see a ghost preview first; afterwards the tool reloads the
   module and checks it against your table. Undo build puts the creation back.
   Two styles: **ROM** (a decoder and an OR plane) and **XOR** (positive-polarity
   Reed–Muller: XORs of shared AND terms, often much smaller); **Auto** picks

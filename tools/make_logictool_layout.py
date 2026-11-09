@@ -198,7 +198,7 @@ def settings_window():
         ("pickBy", "F + click picks", "type + colour", "Which parts count as the same when you F + click one."),
         ("lines", "Wire lines", "Off", "Draw the wires of selected parts in the world, red when on."),
         ("labels", "Part labels", "Order", "Text over selected parts: order in group, type, or delay."),
-        ("lutStyle", "LUT style", "Auto (fewest gates)", "ROM: a row AND per 1, OR outputs. XOR: Reed-Muller terms, XOR outputs. Auto: the smaller."),
+        ("lutStyle", "LUT style", "Auto", "ROM: a row AND per 1, OR outputs. XOR: Reed-Muller terms, XOR outputs. Auto: the smaller."),
         ("lutCompress", "LUT gates", "Spread out", "Stacked puts each column of new LUT gates in one block."),
         ("lutEven", "LUT timing", "Even timing", "Even gives every path the same ticks, so nothing glitches. Fewer gates skips the extra gates."),
     ]

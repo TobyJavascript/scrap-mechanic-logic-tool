@@ -605,7 +605,7 @@ end
 local function moduleText() return (tool.cl.gui.texts.moduleInfo or "") .. "\n" .. (tool.cl.gui.texts.moduleTable or "") end
 local function moduleInfo() return tool.cl.gui.texts.moduleInfo or "" end
 step("module window opens with a hint", function() press("openModule") end)
-check("LUT style starts on Auto", tool.cl.gui.texts.lutStyle == "Auto (fewest gates)", tool.cl.gui.texts.lutStyle)
+check("LUT style starts on Auto", tool.cl.gui.texts.lutStyle == "Auto", tool.cl.gui.texts.lutStyle)
 step("LUT style: ROM for the next tests", function() press("lutStyle") end)
 check("LUT style ROM", tool.cl.gui.texts.lutStyle == "ROM", tool.cl.gui.texts.lutStyle)
 check("module window shown", tool.cl.gui.visible.moduleWindow == true and tool.cl.gui.visible.scriptWindow == false
@@ -688,6 +688,17 @@ end)
 check("build: table is XOR", tool.cl.moduleRows and table.concat({ tool.cl.moduleRows[1].outs[1], tool.cl.moduleRows[2].outs[1],
 	tool.cl.moduleRows[3].outs[1], tool.cl.moduleRows[4].outs[1] }) == "0110", tool.cl.moduleError)
 local shapesBefore = #body.shapes
+-- the old gate also drives a lamp that isn't B: the old circuit stays whole
+step("build: preview with the old circuit still in use", function()
+	SERVER = true gates[3]:connect(light) SERVER = false
+	press("buildLut")
+end)
+check("build: kept whole", (tool.cl.gui.texts.moduleInfo or ""):find("stays whole: it also drives 1 other part", 1, true)
+	and tool.cl.flags[gates[3].id] ~= nil, tool.cl.gui.texts.moduleInfo)
+step("build: cancel, unhook the lamp", function()
+	press("cancelLut")
+	SERVER = true gates[3]:disconnect(light) SERVER = false
+end)
 step("build: preview", function() press("buildLut") end)
 -- even timing: 2 buffers + 2 inverters + 2 rows = 6 new, plus 2 A and 1 B targets
 check("build: preview frames", tool.cl.lutPreview and #tool.cl.lutPreview.effects == 9, tool.cl.lutPreview and #tool.cl.lutPreview.effects)
@@ -760,7 +771,7 @@ local xB = tool.cl.groups.B[1] and tool.cl.groups.B[1].inter
 check("build xor: B is an XOR with 2 terms", xB and xB.ctrl.mode == 2 and #xB.parents == 2, xB and (tostring(xB.ctrl.mode) .. " " .. #xB.parents))
 check("build xor: checked against the table", result():find("matches your table", 1, true), result())
 step("build xor: back to Auto", function() press("lutStyle") end)
-check("build xor: Auto again", tool.cl.gui.texts.lutStyle == "Auto (fewest gates)")
+check("build xor: Auto again", tool.cl.gui.texts.lutStyle == "Auto")
 step("build: cancel", function()
 	setGroup("A", {}) setGroup("B", {})
 	press("buildLut") press("cancelLut")

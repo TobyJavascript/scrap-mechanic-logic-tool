@@ -322,7 +322,7 @@
             <Property key="FontName" value="SM_TextLabel"/>
         </Widget>
         <Widget type="Button" skin="PrimaryButton" position_real="0.4500 0.5330 0.5200 0.0400" name="lutStyle">
-            <Property key="Caption" value="Auto (fewest gates)"/>
+            <Property key="Caption" value="Auto"/>
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>

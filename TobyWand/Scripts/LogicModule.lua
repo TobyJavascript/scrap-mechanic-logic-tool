@@ -276,7 +276,46 @@ local function hasBit(a, b) return math.floor(a / 2 ^ b) % 2 == 1 end
 -- A game XOR gate with many inputs is parity, so it is one gate per output.
 local romPlan, xorPlan
 
+-- Fastest and slowest ticks from an input changing to an output showing it:
+-- every gate on the way takes 1 tick (a B gate too), A and a non-gate B 0.
+local function planTicks(plan)
+	local parents = {}
+	for _, w in ipairs(plan.wires) do
+		parents[w.to] = parents[w.to] or {}
+		table.insert(parents[w.to], w.from)
+	end
+	local memo = {}
+	local function arrive(ref)
+		if memo[ref] then return memo[ref][1], memo[ref][2] end
+		if ref:match("^A%d+$") then return 0, 0 end
+		local own = 1
+		local k = ref:match("^B(%d+)$")
+		if k and not plan.bIsGate[tonumber(k)] then own = 0 end
+		local lo, hi
+		for _, p in ipairs(parents[ref] or {}) do
+			local a, b = arrive(p)
+			if a then
+				lo = lo and math.min(lo, a) or a
+				hi = hi and math.max(hi, b) or b
+			end
+		end
+		if lo then memo[ref] = { lo + own, hi + own } else memo[ref] = {} end
+		return memo[ref][1], memo[ref][2]
+	end
+	local lo, hi
+	for j = 1, plan.nOut do
+		local a, b = arrive("B" .. j)
+		if a then
+			lo = lo and math.min(lo, a) or a
+			hi = hi and math.max(hi, b) or b
+		end
+	end
+	if not lo then return 0 end
+	return lo == hi and lo or (lo .. "-" .. hi)
+end
+
 local function finishPlan(plan)
+	plan.ticks = planTicks(plan)
 	-- blocks used by the new gates when stacked: one per gate column
 	local columns = {}
 	for _, p in ipairs(plan.parts) do columns[p.x] = true end
@@ -343,7 +382,7 @@ function romPlan(m, opts)
 	local bIsGate = opts.bIsGate or {}
 	local MODE = LogicModule.MODE
 	local n, nOut = #m.inputs, #m.outputs
-	local plan = { style = "rom", parts = {}, moves = {}, modes = {}, wires = {}, problems = {},
+	local plan = { style = "rom", bIsGate = opts.bIsGate or {}, nOut = #m.outputs, parts = {}, moves = {}, modes = {}, wires = {}, problems = {},
 		counts = { buffers = 0, inverters = 0, rows = 0, ors = 0, gates = 0 } }
 
 	local function pos(column, i, stack)
@@ -408,8 +447,19 @@ function romPlan(m, opts)
 	end
 
 	-- column 3 (and 4): outputs. A gate B is the OR; any other B gets one.
-	local anyPart = false
-	for j = 1, nOut do if not bIsGate[j] then anyPart = true end end
+	-- A non-gate B (lamp ...) needs an OR in front only for 2+ rows, or for
+	-- 1 row with even timing (the OR keeps every path the same length). A B
+	-- that is never on needs nothing: with no input it stays off.
+	local rowsFor, needGate, anyPart = {}, {}, false
+	for j = 1, nOut do
+		local list = {}
+		for _, address in ipairs(used) do
+			if m.rows[address + 1].outs[j] == 1 then list[#list + 1] = "row" .. address end
+		end
+		rowsFor[j] = list
+		needGate[j] = not bIsGate[j] and (#list >= 2 or (#list == 1 and even))
+		if needGate[j] then anyPart = true end
+	end
 	local bColumn = anyPart and 4 or 3
 	local orCount = 0
 	for j = 1, nOut do
@@ -419,26 +469,13 @@ function romPlan(m, opts)
 		local target = b
 		if bIsGate[j] then
 			plan.modes[b] = MODE.OR
-		else
+		elseif needGate[j] then
 			orCount = orCount + 1
 			target = "or" .. j
 			addPart(target, MODE.OR, 3, orCount, "ors")
 			wire(target, b)
 		end
-		for _, address in ipairs(used) do
-			if m.rows[address + 1].outs[j] == 1 then wire("row" .. address, target) end
-		end
-	end
-
-	-- ticks from an input changing to the B gate (or the OR before B)
-	-- (without buffers a direct input is 2 ticks and an inverted one 3)
-	local inverted, direct = next(needOff) ~= nil, next(needOn) ~= nil
-	if even or not direct then
-		plan.ticks = 3
-	elseif inverted then
-		plan.ticks = "2-3"
-	else
-		plan.ticks = 2
+		for _, src in ipairs(rowsFor[j]) do wire(src, target) end
 	end
 	return plan
 end
@@ -473,7 +510,7 @@ function xorPlan(m, opts)
 	local bIsGate = opts.bIsGate or {}
 	local MODE = LogicModule.MODE
 	local n, nOut = #m.inputs, #m.outputs
-	local plan = { style = "xor", parts = {}, moves = {}, modes = {}, wires = {}, problems = {},
+	local plan = { style = "xor", bIsGate = opts.bIsGate or {}, nOut = #m.outputs, parts = {}, moves = {}, modes = {}, wires = {}, problems = {},
 		counts = { terms = 0, outs = 0, gates = 0 } }
 	local function pos(column, i)
 		if compress then return column, 0, 0 end
@@ -499,7 +536,7 @@ function xorPlan(m, opts)
 	-- A one-input term is just that input: with even timing it still gets an
 	-- AND (as a buffer), so every path is 2 ticks.
 	local src = {}
-	local used, single, multi = 0, false, false
+	local used = 0
 	for a = 1, #m.rows - 1 do
 		local wanted = false
 		for j = 1, nOut do if coef[j][a + 1] == 1 then wanted = true break end end
@@ -508,53 +545,51 @@ function xorPlan(m, opts)
 			for k = 1, n do if hasBit(a, k - 1) then bits[#bits + 1] = k end end
 			if #bits == 1 and not even then
 				src[a] = "A" .. bits[1]
-				single = true
 			else
 				used = used + 1
 				local ref = "term" .. a
 				addPart(ref, MODE.AND, 1, used, "terms")
 				for _, k in ipairs(bits) do wire("A" .. k, ref) end
 				src[a] = ref
-				multi = true
 			end
 		end
 	end
 
 	-- column 2 (and 3): outputs. A gate B is the XOR (or XNOR) itself.
-	local anyPart = false
-	for j = 1, nOut do if not bIsGate[j] then anyPart = true end end
+	-- A non-gate B needs an XOR/XNOR in front for 2+ terms, for a constant
+	-- term (XNOR), or for 1 term with even timing; otherwise the one term
+	-- is wired straight to B, and a B with no terms needs nothing.
+	local termsFor, needGate, anyPart = {}, {}, false
+	for j = 1, nOut do
+		local list = {}
+		for a = 1, #m.rows - 1 do
+			if coef[j][a + 1] == 1 then list[#list + 1] = src[a] end
+		end
+		termsFor[j] = list
+		local constant = coef[j][1] == 1
+		if constant and #list == 0 then
+			-- a gate with no inputs is off in the game, XNOR too
+			plan.problems[#plan.problems + 1] = string.format("B%d is always on, which XOR style can't build (use ROM)", j - 1)
+		end
+		needGate[j] = not bIsGate[j] and (#list >= 2 or (#list == 1 and (even or constant)))
+		if needGate[j] then anyPart = true end
+	end
 	local bColumn = anyPart and 3 or 2
 	local outCount = 0
 	for j = 1, nOut do
 		local b = "B" .. j
 		plan.moves[#plan.moves + 1] = { ref = b, x = bColumn, y = (j - 1) % LogicModule.WRAP, z = math.floor((j - 1) / LogicModule.WRAP) }
 		local mode = coef[j][1] == 1 and MODE.XNOR or MODE.XOR
-		local terms = 0
-		for a = 1, #m.rows - 1 do if coef[j][a + 1] == 1 then terms = terms + 1 end end
-		if coef[j][1] == 1 and terms == 0 then
-			-- a gate with no inputs is off in the game, XNOR too
-			plan.problems[#plan.problems + 1] = string.format("B%d is always on, which XOR style can't build (use ROM)", j - 1)
-		end
 		local target = b
 		if bIsGate[j] then
 			plan.modes[b] = mode
-		else
+		elseif needGate[j] then
 			outCount = outCount + 1
 			target = "xo" .. j
 			addPart(target, mode, 2, outCount, "outs")
 			wire(target, b)
 		end
-		for a = 1, #m.rows - 1 do
-			if coef[j][a + 1] == 1 then wire(src[a], target) end
-		end
-	end
-
-	if even or not single then
-		plan.ticks = 2
-	elseif multi then
-		plan.ticks = "1-2"
-	else
-		plan.ticks = 1
+		for _, from in ipairs(termsFor[j]) do wire(from, target) end
 	end
 	return plan
 end
@@ -665,7 +700,10 @@ end
 -- Every wire into B is cut first: B gets only the LUT's wires.
 -- New gates are turned like the module's own parts: like the first gate in B
 -- (the same part, so they look the same), else like A1.
--- Returns { [ref] = child } for A1.., B1.., and every new gate.
+-- refs.helpers = { { child =, input = k } }: gates that only feed A, moved
+-- in front of their A.
+-- Returns { [ref] = child } for A1.., B1.., every new gate and helper, and
+-- the list of moves made (A, B and helpers, in plan coordinates).
 function LogicModule.applyLut(bp, plan, refs, origin)
 	local home = bp.bodies[refs.body]
 	local childOf = {}
@@ -703,8 +741,22 @@ function LogicModule.applyLut(bp, plan, refs, origin)
 	-- B gates become the ORs
 	for ref, mode in pairs(plan.modes) do childOf[ref].controller.mode = mode end
 
-	-- move A and B into their lines
-	for _, mv in ipairs(plan.moves) do
+	-- helpers go in front of the A they serve, on its line: the first one
+	-- block before A, the next two blocks before ...
+	local moves = {}
+	for _, mv in ipairs(plan.moves) do moves[#moves + 1] = mv end
+	local aPos, count = {}, {}
+	for _, mv in ipairs(plan.moves) do aPos[mv.ref] = mv end
+	for _, h in ipairs(refs.helpers or {}) do
+		local a = aPos["A" .. h.input]
+		count[h.input] = (count[h.input] or 0) + 1
+		local ref = "H" .. h.input .. "_" .. count[h.input]
+		childOf[ref] = h.child
+		moves[#moves + 1] = { ref = ref, x = a.x - count[h.input], y = a.y, z = a.z }
+	end
+
+	-- move A, B and the helpers into their lines
+	for _, mv in ipairs(moves) do
 		local child = childOf[mv.ref]
 		local cell = LogicModule.cellOf(child)
 		local target = LogicModule.toBody(origin, mv.x, mv.y, mv.z)
@@ -748,7 +800,7 @@ function LogicModule.applyLut(bp, plan, refs, origin)
 			if ctrl and ctrl.controllers and #ctrl.controllers == 0 then ctrl.controllers = nil end
 		end
 	end
-	return childOf
+	return childOf, moves
 end
 
 -- Parts in a blueprint that break the game's wire limits: more than 255
@@ -775,28 +827,200 @@ function LogicModule.wireLimits(bp)
 	return out
 end
 
--- Which inside parts can go: the ones that only feed other removable parts
--- or B. A part that also drives something outside stays, and so does
--- everything inside that feeds it.
-function LogicModule.removable(graph, inside, outputs)
-	local isInside, isOut = {}, {}
-	for _, id in ipairs(inside.parts) do isInside[id] = true end
-	for _, id in ipairs(outputs) do isOut[id] = true end
-	local keep, queue = {}, {}
-	for _, id in ipairs(inside.extraOut) do
-		if not keep[id] then keep[id] = true queue[#queue + 1] = id end
+-- The old circuit between A and B, all or nothing. Starts at the parts
+-- between A and B (inside.parts) plus the dead logic hanging off A (gates
+-- fed only by A or other dead logic that reach nothing: no lamp, no other
+-- logic, no way back into A; a compressed ROM's unused input gates), and
+-- follows wires both ways to every gate or timer it is connected to, but
+-- never through A, B, or other parts (switches, lamps ...). Returns:
+--   parts        ids of the whole old circuit
+--   usedOutside  ids of parts outside it that it drives (not B). When there
+--                are any, the circuit is still in use and must stay whole.
+-- isLogic(id) says which ids are gates/timers (default: graph kind).
+function LogicModule.oldCircuit(graph, inside, inputs, outputs, isLogic)
+	isLogic = isLogic or function(id)
+		local k = graph[id] and graph[id].kind
+		return k == "gate" or k == "timer"
+	end
+	local stop = {}
+	for _, id in ipairs(inputs) do stop[id] = true end
+	for _, id in ipairs(outputs) do stop[id] = true end
+	local inCircuit, queue = {}, {}
+	local function add(id)
+		if not inCircuit[id] then inCircuit[id] = true queue[#queue + 1] = id end
+	end
+	for _, id in ipairs(inside.parts) do add(id) end
+
+	-- dead logic hanging off A: everything downstream of A (not past B) that
+	-- can't reach a "live" part: a non-logic part (lamp ...) or an A again
+	local isA = {}
+	for _, id in ipairs(inputs) do isA[id] = true end
+	local isB = {}
+	for _, id in ipairs(outputs) do isB[id] = true end
+	local down, order = {}, {}
+	for _, a in ipairs(inputs) do
+		for _, c in ipairs(graph[a] and graph[a].children or {}) do
+			if graph[c] and not down[c] and not isA[c] and not isB[c] then down[c] = true order[#order + 1] = c end
+		end
+	end
+	local k = 1
+	while k <= #order do
+		local u = order[k]
+		k = k + 1
+		for _, c in ipairs(graph[u].children) do
+			if graph[c] and not down[c] and not isA[c] and not isB[c] then down[c] = true order[#order + 1] = c end
+		end
+	end
+	local live, back = {}, {}
+	for _, id in ipairs(order) do
+		local sink = not isLogic(id)
+		for _, c in ipairs(graph[id].children) do
+			if isA[c] or (graph[c] and not down[c] and not isB[c]) then sink = true end
+		end
+		if sink then live[id] = true back[#back + 1] = id end
+	end
+	k = 1
+	while k <= #back do
+		local u = back[k]
+		k = k + 1
+		for _, p in ipairs(graph[u].parents) do
+			if down[p] and not live[p] then live[p] = true back[#back + 1] = p end
+		end
+	end
+	-- dead = downstream of A, not live, a gate/timer, fed only by A or other
+	-- dead logic (so logic of something else that merely ends here stays)
+	local dead = {}
+	for _, id in ipairs(order) do
+		if not live[id] and isLogic(id) then dead[id] = true end
+	end
+	local changed = true
+	while changed do
+		changed = false
+		for id in pairs(dead) do
+			for _, p in ipairs(graph[id].parents) do
+				if not isA[p] and not dead[p] and not inCircuit[p] then
+					-- a parent from elsewhere: allowed only if it is dead logic too
+					-- (it gets checked in its own turn) or an input-less helper of it
+					local pn = graph[p]
+					if not (pn and #pn.parents == 0 and isLogic(p)) then
+						dead[id] = nil
+						changed = true
+						break
+					end
+				end
+			end
+		end
+	end
+	for _, id in ipairs(order) do
+		if dead[id] then add(id) end
 	end
 	local i = 1
 	while i <= #queue do
 		local u = queue[i]
 		i = i + 1
-		for _, p in ipairs(graph[u].parents) do
-			if isInside[p] and not keep[p] then keep[p] = true queue[#queue + 1] = p end
+		for _, field in ipairs({ "children", "parents" }) do
+			for _, v in ipairs(graph[u][field]) do
+				if graph[v] and not inCircuit[v] and not stop[v] and isLogic(v) then
+					inCircuit[v] = true
+					queue[#queue + 1] = v
+				end
+			end
+		end
+	end
+	local isOut = {}
+	for _, id in ipairs(outputs) do isOut[id] = true end
+	local parts, used, seenUse = {}, {}, {}
+	for _, id in ipairs(queue) do
+		parts[#parts + 1] = id
+		for _, c in ipairs(graph[id].children) do
+			if not inCircuit[c] and not isOut[c] and not seenUse[c] then
+				seenUse[c] = true
+				used[#used + 1] = c
+			end
+		end
+	end
+	table.sort(parts)
+	table.sort(used)
+	return { parts = parts, usedOutside = used }
+end
+
+-- Unwired gates/timers (no inputs, no outputs) stacked in the same block as
+-- a part in `removeSet` (a set of blueprint childs): leftovers inside a
+-- compressed cluster. They do nothing, so they go with it.
+LogicModule.TIMER_UUID = "8f7fd0e7-c46e-4944-a414-7ce2437bb30f"
+function LogicModule.strayInCells(bp, removeSet)
+	local cells = {}
+	for child in pairs(removeSet) do cells[table.concat(LogicModule.cellOf(child), ",")] = true end
+	local fed = {}
+	for _, body in ipairs(bp.bodies) do
+		for _, child in ipairs(body.childs or {}) do
+			for _, w in ipairs(child.controller and child.controller.controllers or {}) do fed[w.id] = true end
 		end
 	end
 	local out = {}
-	for _, id in ipairs(inside.parts) do
-		if not keep[id] then out[#out + 1] = id end
+	for _, body in ipairs(bp.bodies) do
+		for _, child in ipairs(body.childs or {}) do
+			local ctrl = child.controller
+			if ctrl and not removeSet[child] and (child.shapeId == LogicModule.GATE_UUID or child.shapeId == LogicModule.TIMER_UUID)
+				and #(ctrl.controllers or {}) == 0 and not fed[ctrl.id]
+				and cells[table.concat(LogicModule.cellOf(child), ",")] then
+				out[#out + 1] = child
+			end
+		end
 	end
-	return out, keep
+	return out
+end
+
+-- Helpers of the inputs: gates/timers whose only job is feeding A parts
+-- (everything they drive is an A part or another helper), found walking
+-- back from each A. They move along with A. Returns a list of
+-- { id =, input = k (the A they serve, the first one if several), depth = 1.. }.
+-- exclude[id] = true keeps a part out (the old circuit); ok(id) can refuse
+-- one (e.g. on another body).
+function LogicModule.helpers(graph, inputs, exclude, ok)
+	exclude = exclude or {}
+	ok = ok or function() return true end
+	local inputOf = {}
+	for k, id in ipairs(inputs) do inputOf[id] = inputOf[id] or k end
+	local helper = {}   -- id -> { input =, depth = }
+	local list = {}
+	local function candidate(id)
+		local node = graph[id]
+		if not node or inputOf[id] or helper[id] or exclude[id] then return nil end
+		if node.kind ~= "gate" and node.kind ~= "timer" then return nil end
+		if not ok(id) then return nil end
+		local serves, depth
+		for _, c in ipairs(node.children) do
+			local into = inputOf[c] and { input = inputOf[c], depth = 0 } or helper[c]
+			if not into then return nil end
+			if not serves or into.input < serves then serves = into.input end
+			depth = math.max(depth or 0, into.depth + 1)
+		end
+		if not serves then return nil end
+		return { input = serves, depth = depth }
+	end
+	-- grow until nothing changes: a parent only qualifies once all it drives does
+	local changed = true
+	while changed do
+		changed = false
+		local frontier = {}
+		for id in pairs(inputOf) do frontier[#frontier + 1] = id end
+		for id in pairs(helper) do frontier[#frontier + 1] = id end
+		for _, id in ipairs(frontier) do
+			for _, p in ipairs(graph[id].parents) do
+				local h = candidate(p)
+				if h then
+					helper[p] = h
+					list[#list + 1] = { id = p, input = h.input, depth = h.depth }
+					changed = true
+				end
+			end
+		end
+	end
+	table.sort(list, function(a, b)
+		if a.input ~= b.input then return a.input < b.input end
+		if a.depth ~= b.depth then return a.depth < b.depth end
+		return tostring(a.id) < tostring(b.id)
+	end)
+	return list
 end

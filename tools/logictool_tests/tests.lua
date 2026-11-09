@@ -627,15 +627,87 @@ do
 	end
 	check("posFor reverses cellOf for all 24 turns", roundTrip)
 
-	-- removable: inside parts that feed outside stay, with what feeds them
+	-- the old circuit, all or nothing. q also drives a lamp that isn't B,
+	-- so the whole circuit is still in use
 	local g = mkgraph({
 		nodes = { a = { kind = "input" }, p = { kind = "gate", mode = 0 }, q = { kind = "gate", mode = 0 },
 			r = { kind = "gate", mode = 0 }, b = { kind = "gate", mode = 1 }, lamp = { kind = "output" } },
 		edges = { { "a", "p" }, { "p", "q" }, { "q", "b" }, { "a", "r" }, { "r", "b" }, { "q", "lamp" } }
 	})
 	local ins = LogicModule.inside(g, { "a" }, { "b" })
-	local rem = LogicModule.removable(g, ins, { "b" })
-	check("removable", table.concat(rem, ",") == "r", table.concat(rem, ","))
+	local oc = LogicModule.oldCircuit(g, ins, { "a" }, { "b" })
+	check("old circuit is all of it", table.concat(oc.parts, ",") == "p,q,r", table.concat(oc.parts, ","))
+	check("old circuit still used by the lamp", table.concat(oc.usedOutside, ",") == "lamp", table.concat(oc.usedOutside, ","))
+
+	-- a ROM with a dead row (d, feeds nothing) and an unused output (u, not in
+	-- B, drives nothing): all of it goes; logic only fed by A (s) is not part of it
+	local g2 = mkgraph({
+		nodes = { a = { kind = "input" }, inv = { kind = "gate", mode = 4 }, r1 = { kind = "gate", mode = 0 },
+			d = { kind = "gate", mode = 0 }, u = { kind = "gate", mode = 1 }, b = { kind = "gate", mode = 1 },
+			s = { kind = "gate", mode = 1 }, lamp = { kind = "output" } },
+		edges = { { "a", "inv" }, { "inv", "r1" }, { "r1", "b" }, { "inv", "d" }, { "r1", "u" }, { "a", "s" }, { "s", "lamp" } }
+	})
+	local oc2 = LogicModule.oldCircuit(g2, LogicModule.inside(g2, { "a" }, { "b" }), { "a" }, { "b" })
+	check("whole old ROM found", table.concat(oc2.parts, ",") == "d,inv,r1,u", table.concat(oc2.parts, ","))
+	check("nothing outside uses it", #oc2.usedOutside == 0)
+
+	-- a compressed ROM's input layer: dead gates fed only by A (and an
+	-- input-less gate feeding one) belong to the old circuit; logic fed by A
+	-- that lights a lamp elsewhere does not, nor does a dead gate that
+	-- other live logic also feeds
+	local g4 = mkgraph({
+		nodes = { a = { kind = "input" }, b = { kind = "gate", mode = 1 }, row = { kind = "gate", mode = 0 },
+			dead1 = { kind = "gate", mode = 0 }, dead2 = { kind = "gate", mode = 4 }, const = { kind = "gate", mode = 0 },
+			live = { kind = "gate", mode = 1 }, lamp = { kind = "output" },
+			other = { kind = "gate", mode = 1 }, sw = { kind = "input" }, otherDead = { kind = "gate", mode = 0 } },
+		edges = { { "a", "row" }, { "row", "b" }, { "a", "dead1" }, { "dead1", "dead2" }, { "const", "dead2" },
+			{ "a", "live" }, { "live", "lamp" },
+			{ "sw", "other" }, { "other", "lamp" }, { "other", "otherDead" }, { "a", "otherDead" } }
+	})
+	local oc4 = LogicModule.oldCircuit(g4, LogicModule.inside(g4, { "a" }, { "b" }), { "a" }, { "b" })
+	check("dead logic off A is part of the old circuit", table.concat(oc4.parts, ",") == "const,dead1,dead2,row", table.concat(oc4.parts, ","))
+	check("live logic fed by A is not", #oc4.usedOutside == 0)
+
+	-- unwired gates stacked in a removed block go too; elsewhere, or wired, they stay
+	local function g5(id, x, wires) return gate(id, x, 0, wires) end
+	local r1, s1, s2, w1 = g5(31, 4, { 99 }), g5(32, 4), g5(33, 5), g5(34, 4, { 35 })
+	local w2 = g5(35, 9)
+	local bp5 = { bodies = { { childs = { r1, s1, s2, w1, w2 } } } }
+	local strays = LogicModule.strayInCells(bp5, { [r1] = true })
+	check("stray in the removed block", #strays == 1 and strays[1] == s1, #strays)
+
+	-- helpers: k (constant-on trick: an AND with no inputs feeding the NAND
+	-- input) and its own helper h move with A0; t also drives a lamp, so it
+	-- stays; s feeds both inputs and serves the first one
+	local g3 = mkgraph({
+		nodes = { a0 = { kind = "gate", mode = 3 }, a1 = { kind = "gate", mode = 1 }, k = { kind = "gate", mode = 0 },
+			h = { kind = "gate", mode = 1 }, t = { kind = "gate", mode = 1 }, lamp = { kind = "output" },
+			s = { kind = "gate", mode = 1 }, sw = { kind = "input" } },
+		edges = { { "h", "k" }, { "k", "a0" }, { "t", "a1" }, { "t", "lamp" }, { "s", "a0" }, { "s", "a1" }, { "sw", "h" } }
+	})
+	local hs = LogicModule.helpers(g3, { "a0", "a1" })
+	local got = {}
+	for _, h in ipairs(hs) do got[#got + 1] = h.id .. ":" .. h.input .. ":" .. h.depth end
+	check("helpers", table.concat(got, ",") == "k:1:1,s:1:1,h:1:2", table.concat(got, ","))
+	local hx = LogicModule.helpers(g3, { "a0", "a1" }, { k = true })
+	local gotx = {}
+	for _, h in ipairs(hx) do gotx[#gotx + 1] = h.id end
+	check("excluded part and what only feeds it stay", table.concat(gotx, ",") == "s", table.concat(gotx, ","))
+
+	-- helpers are moved in front of their A, on its line
+	local ha, hb = gate(21, 0, 3, {}), gate(22, 1, 1, {})
+	local hk, hh = gate(23, 6, 0, { 21 }), gate(24, 7, 1, { 23 })
+	local bp3 = { bodies = { { childs = { { pos = { x = 0, y = 0, z = -1 }, bounds = { x = 8, y = 1, z = 1 }, shapeId = "block" }, ha, hb, hk, hh } } } }
+	local m3 = { inputs = { "A0" }, outputs = { "B0" }, rows = { { outs = { 0 } }, { outs = { 1 } } } }
+	local plan3 = LogicModule.lutPlan(m3, { bIsGate = { true } })
+	local o3 = LogicModule.placeOnTop(bp3.bodies[1])
+	local _, moves3 = LogicModule.applyLut(bp3, plan3, { body = 1, A = { ha }, B = { hb }, remove = {},
+		helpers = { { child = hk, input = 1 }, { child = hh, input = 1 } } }, o3)
+	local function cell(c) return table.concat(LogicModule.cellOf(c), ",") end
+	check("helper 1 block before A", cell(hk) == table.concat(LogicModule.toBody(o3, -1, 0, 0), ","), cell(hk))
+	check("helper 2 blocks before A", cell(hh) == table.concat(LogicModule.toBody(o3, -2, 0, 0), ","), cell(hh))
+	check("helper keeps its wire", hh.controller.controllers[1].id == 23 and hk.controller.controllers[1].id == 21)
+	check("helpers listed in the moves", #moves3 == 4, #moves3)
 end
 
 do
@@ -743,6 +815,36 @@ do
 		end
 	end
 	check("every plan builds its table (" .. tried .. " plans)", allOk and tried > 80, tried)
+end
+
+do
+	-- a player's 3-in / 7-out table driving lamps: never-on outputs need no
+	-- gate, and with Fewer gates a one-term output is wired straight to its lamp
+	local rows = { "0001110", "0001000", "0000010", "0001010", "0100000", "0101001", "0100010", "0101011" }
+	local m = { inputs = { "A0", "A1", "A2" }, outputs = {}, rows = {} }
+	for k = 1, 7 do m.outputs[k] = "B" .. (k - 1) end
+	for a, r in ipairs(rows) do
+		local o = {}
+		for k = 1, 7 do o[k] = tonumber(r:sub(8 - k, 8 - k)) end
+		m.rows[a] = { outs = o }
+	end
+	local lamps = { false, false, false, false, false, false, false }
+	local xf = LogicModule.lutPlan(m, { style = "xor", even = false, bIsGate = lamps })
+	check("lamps, XOR, fewer gates: 7 gates", xf.counts.gates == 7 and xf.counts.terms == 4 and xf.counts.outs == 3,
+		LogicModule.planText(xf))
+	local xe = LogicModule.lutPlan(m, { style = "xor", even = true, bIsGate = lamps })
+	check("lamps, XOR, even: 12 gates", xe.counts.gates == 12, LogicModule.planText(xe))
+	local rf = LogicModule.lutPlan(m, { style = "rom", even = false, bIsGate = lamps })
+	check("lamps, ROM, fewer gates: 15 gates", rf.counts.gates == 15, LogicModule.planText(rf))
+	local wires = {}
+	for _, w in ipairs(xf.wires) do wires[w.from .. ">" .. w.to] = true end
+	check("B5 = A2, wired straight", wires["A3>B6"] == true)
+	check("B0 = A0 A2, its AND wired straight", wires["term5>B1"] == true)
+	local feedsB4 = false
+	for _, w in ipairs(xf.wires) do if w.to == "B5" or w.to == "B7" then feedsB4 = true end end
+	check("never-on outputs get nothing", not feedsB4)
+	check("ticks measured from the wiring", xf.ticks == "0-2" and xe.ticks == 2, tostring(xf.ticks) .. " " .. tostring(xe.ticks))
+	check("ticks with no bIsGate given", LogicModule.lutPlan(m, { style = "rom" }).ticks == 3)
 end
 
 print(string.format("%d passed, %d failed", passed, failures))
