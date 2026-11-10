@@ -847,5 +847,226 @@ do
 	check("ticks with no bIsGate given", LogicModule.lutPlan(m, { style = "rom" }).ticks == 3)
 end
 
+---------------------------------------------------------------------------
+-- Tick debugger
+---------------------------------------------------------------------------
+
+do
+	-- the player's test: a = AND with no inputs; a -> or1 -> and1 -> and2 -> or1
+	-- (a loop); a -> xor (wired to itself); or1, xor -> b (OR)
+	local g = mkgraph({
+		nodes = { a = { kind = "gate", mode = 0 }, or1 = { kind = "gate", mode = 1 }, and1 = { kind = "gate", mode = 0 },
+			and2 = { kind = "gate", mode = 0 }, xor = { kind = "gate", mode = 2 }, b = { kind = "gate", mode = 1 } },
+		edges = { { "a", "or1" }, { "or1", "and1" }, { "and1", "and2" }, { "and2", "or1" }, { "a", "xor" },
+			{ "xor", "xor" }, { "or1", "b" }, { "xor", "b" } }
+	})
+	local parts = { "a", "b", "or1", "and1", "and2", "xor" }
+	local held = LogicGraph.debugStart(g, parts, {}, { "a" }, { true })
+	local xs = {}
+	for _ = 1, 6 do LogicGraph.debugForward(held) xs[#xs + 1] = held.state.values.xor and "1" or "0" end
+	check("debug held: xor with a held on flips every tick", table.concat(xs) == "101010", table.concat(xs))
+	local pulse = LogicGraph.debugStart(g, parts, {}, { "a" }, { true }, { mode = "pulse" })
+	local bs = {}
+	xs = {}
+	for _ = 1, 8 do
+		LogicGraph.debugForward(pulse)
+		xs[#xs + 1] = pulse.state.values.xor and "1" or "0"
+		bs[#bs + 1] = pulse.state.values.b and "1" or "0"
+	end
+	check("debug pulse: a back off after 1 tick", pulse.state.values.a == false and pulse.changes[1][1] ~= nil)
+	check("debug pulse: xor toggles once and stays on", table.concat(xs) == "11111111", table.concat(xs))
+	check("debug pulse: b stays on", table.concat(bs) == "01111111", table.concat(bs))
+
+	-- countdown: at tick 0 of Held, or1 changes next tick, and1 in 2, and2 in 3, b in 2
+	local d = LogicGraph.debugStart(g, parts, {}, { "a" }, { true })
+	local ahead = LogicGraph.debugLookahead(d, parts, 64)
+	check("lookahead: ticks until each part changes", ahead.or1 == 1 and ahead.and1 == 2 and ahead.and2 == 3
+		and ahead.b == 2 and ahead.xor == 1 and ahead.a == nil,
+		string.format("%s %s %s %s", tostring(ahead.or1), tostring(ahead.and1), tostring(ahead.and2), tostring(ahead.b)))
+	LogicGraph.debugForward(d)
+	ahead = LogicGraph.debugLookahead(d, parts, 64)
+	check("lookahead counts down", ahead.and1 == 1 and ahead.and2 == 2 and ahead.b == 1 and ahead.or1 == nil)
+	check("lookahead leaves the session alone", d.tick == 1 and d.state.values.and1 == false)
+	check("xor memory found", LogicGraph.isXorMemory(g, "xor") and not LogicGraph.isXorMemory(g, "or1")
+		and not LogicGraph.isXorMemory(g, "b"))
+end
+
+do
+	-- repeat: inputs "101" every 3 ticks; a0 and a2 pulse, a1 stays off
+	local g = mkgraph({
+		nodes = { a0 = { kind = "input" }, a1 = { kind = "input" }, a2 = { kind = "input" },
+			b0 = { kind = "gate", mode = 1 }, b1 = { kind = "gate", mode = 1 }, b2 = { kind = "gate", mode = 1 } },
+		edges = { { "a0", "b0" }, { "a1", "b1" }, { "a2", "b2" } }
+	})
+	local parts = { "a0", "a1", "a2", "b0", "b1", "b2" }
+	local d = LogicGraph.debugStart(g, parts, { a1 = true }, { "a0", "a1", "a2" }, { true, false, true },
+		{ mode = "repeat", every = 3 })
+	local a0, a1, b0 = { "1" }, { "0" }, { "0" }
+	for _ = 1, 7 do
+		LogicGraph.debugForward(d)
+		local v = d.state.values
+		a0[#a0 + 1], a1[#a1 + 1], b0[#b0 + 1] = v.a0 and "1" or "0", v.a1 and "1" or "0", v.b0 and "1" or "0"
+	end
+	check("repeat: a0 pulses every 3", table.concat(a0) == "10010010", table.concat(a0))
+	check("repeat: a1 (0) stays off", table.concat(a1) == "00000000", table.concat(a1))
+	check("repeat: b0 follows 1 tick later", table.concat(b0) == "01001001", table.concat(b0))
+	check("repeat never settles", not LogicGraph.debugSettled(d))
+	LogicGraph.debugBack(d)
+	LogicGraph.debugBack(d)
+	LogicGraph.debugForward(d)
+	check("repeat: replay matches", d.tick == 6 and d.state.values.a0 == true and d.state.values.b0 == false)
+	local ahead = LogicGraph.debugLookahead(d, parts, 64)
+	check("repeat: countdown knows the next pulse", ahead.b0 == 1 and ahead.a0 == 1 and ahead.a2 == 1 and ahead.b1 == nil)
+end
+
+do
+	-- a change blocked by an AND never arrives: no countdown there
+	local g = mkgraph({
+		nodes = { a = { kind = "input" }, off = { kind = "input" }, x = { kind = "gate", mode = 0 }, y = { kind = "gate", mode = 1 } },
+		edges = { { "a", "x" }, { "off", "x" }, { "a", "y" } }
+	})
+	local d = LogicGraph.debugStart(g, { "a", "x", "y" }, {}, { "a" }, { true })
+	local ahead = LogicGraph.debugLookahead(d, { "a", "x", "y" }, 64)
+	check("lookahead: blocked AND gets none", ahead.x == nil and ahead.y == 1)
+end
+
+do
+	-- a clock beside the circuit: clk (NOR wired to itself) -> x (AND) <- a; x -> b
+	local g = mkgraph({
+		nodes = { a = { kind = "input" }, clk = { kind = "gate", mode = 4 }, x = { kind = "gate", mode = 0 },
+			b = { kind = "gate", mode = 1 } },
+		edges = { { "clk", "clk" }, { "clk", "x" }, { "a", "x" }, { "x", "b" } }
+	})
+	local d = LogicGraph.debugStart(g, { "a", "x", "b" }, { clk = true }, { "a" }, { true })
+	local seen = {}
+	for _ = 1, 6 do
+		LogicGraph.debugForward(d)
+		seen[#seen + 1] = d.state.values.b and "1" or "0"
+	end
+	check("debug: clock beside keeps running", d.graph.clk ~= nil and table.concat(seen):find("1010", 1, true) ~= nil,
+		table.concat(seen))
+	check("debug: a clock never settles", not LogicGraph.debugSettled(d))
+end
+
+do
+	-- a loop through the input: a (OR) <- loop (OR) <- a ; a -> b. One kick at
+	-- tick 0 keeps going round (the game does the same): b blinks every 2 ticks.
+	local g = mkgraph({
+		nodes = { a = { kind = "gate", mode = 1 }, loop = { kind = "gate", mode = 1 }, b = { kind = "gate", mode = 1 } },
+		edges = { { "a", "loop" }, { "loop", "a" }, { "a", "b" } }
+	})
+	local held = LogicGraph.debugStart(g, { "a", "b" }, {}, { "a" }, { true })
+	local once = LogicGraph.debugStart(g, { "a", "b" }, {}, { "a" }, { true }, { mode = "free" })
+	check("debug: held input cuts the loop upstream", held.graph.loop == nil and once.graph.loop ~= nil)
+	local bs = {}
+	for _ = 1, 6 do
+		LogicGraph.debugForward(once)
+		bs[#bs + 1] = once.state.values.b and "1" or "0"
+	end
+	check("debug: set once, the kick goes round the loop", table.concat(bs) == "101010", table.concat(bs))
+	-- a self-wired OR keeps itself on once kicked
+	local latch = LogicGraph.debugStart(mkgraph({ nodes = { a = { kind = "gate", mode = 1 }, b = { kind = "gate", mode = 1 } },
+		edges = { { "a", "a" }, { "a", "b" } } }), { "a", "b" }, {}, { "a" }, { true }, { mode = "free" })
+	for _ = 1, 4 do LogicGraph.debugForward(latch) end
+	check("debug: set once, a self-wired OR stays on", latch.state.values.a and latch.state.values.b and LogicGraph.debugSettled(latch))
+	local pulse = LogicGraph.debugStart(mkgraph({ nodes = { a = { kind = "gate", mode = 1 }, b = { kind = "gate", mode = 1 } },
+		edges = { { "a", "b" } } }), { "a", "b" }, {}, { "a" }, { true }, { mode = "free" })
+	for _ = 1, 3 do LogicGraph.debugForward(pulse) end
+	check("debug: set once with no inputs = a 1 tick pulse", pulse.state.values.a == false and pulse.state.values.b == false
+		and LogicGraph.debugChangeCounts(pulse, { "b" }).b == 2)
+end
+
+local function sorted(list)
+	local o = {}
+	for i, v in ipairs(list) do o[i] = v end
+	table.sort(o)
+	return table.concat(o, ",")
+end
+
+do
+	-- a -> n1 (NOR) -> n2 (NOR) -> b ; a -> x (AND) -> b (OR) ; ext -> x
+	-- In the game now: a off, so n1 on, n2 off, x off, b off. ext (outside) is on.
+	local g = mkgraph({
+		nodes = { a = { kind = "input" }, n1 = { kind = "gate", mode = 4 }, n2 = { kind = "gate", mode = 4 },
+			x = { kind = "gate", mode = 0 }, b = { kind = "gate", mode = 1 }, ext = { kind = "input" },
+			after = { kind = "gate", mode = 1 } },
+		edges = { { "a", "n1" }, { "n1", "n2" }, { "n2", "b" }, { "a", "x" }, { "ext", "x" }, { "x", "b" }, { "b", "after" } }
+	})
+	local snap = { a = false, n1 = true, n2 = false, x = false, b = false, ext = true }
+	local d = LogicGraph.debugStart(g, { "a", "n1", "n2", "x", "b" }, snap, { "a" }, { true })
+	check("debug: tick 0 is the input change", d.tick == 0 and sorted(d.changes[0]) == "a")
+	check("debug: what feeds it runs along", d.graph.ext ~= nil and d.forced.ext == nil and d.state.values.ext == true
+		and d.graph.after == nil)
+	check("debug: not settled at start", not LogicGraph.debugSettled(d))
+	LogicGraph.debugForward(d)
+	check("debug: tick 1 = n1 off, x on", sorted(d.changes[1]) == "n1,x", sorted(d.changes[1]))
+	LogicGraph.debugForward(d)
+	check("debug: tick 2 = n2 on, b on", sorted(d.changes[2]) == "b,n2", sorted(d.changes[2]))
+	LogicGraph.debugForward(d)
+	check("debug: tick 3 quiet", #d.changes[3] == 0 and LogicGraph.debugSettled(d))
+	check("debug: last change at 2", LogicGraph.debugLastChange(d) == 2)
+	check("debug: b on", d.state.values.b == true)
+
+	LogicGraph.debugBack(d)
+	LogicGraph.debugBack(d)
+	check("debug: back to tick 1", d.tick == 1 and d.state.values.n1 == false and d.state.values.x == true
+		and d.state.values.n2 == false and d.state.values.b == false)
+	LogicGraph.debugBack(d)
+	check("debug: back to the start", d.tick == 0 and d.state.values.n1 == true and d.state.values.a == true)
+	check("debug: can't go before 0", LogicGraph.debugBack(d) == false and d.tick == 0)
+	LogicGraph.debugForward(d)
+	LogicGraph.debugForward(d)
+	check("debug: replay gives the same", d.tick == 2 and d.last == 3 and d.state.values.b == true and d.state.values.n2 == true)
+	check("debug: b changed once", LogicGraph.debugChangeCounts(d, { "b" }).b == 1)
+end
+
+do
+	-- glitch: a -> b (XOR) directly and through a NOT: b pulses for 1 tick
+	local g = mkgraph({
+		nodes = { a = { kind = "input" }, n = { kind = "gate", mode = 4 }, buf = { kind = "gate", mode = 1 },
+			b = { kind = "gate", mode = 2 } },
+		edges = { { "a", "n" }, { "a", "buf" }, { "n", "b" }, { "buf", "b" } }
+	})
+	-- settled with a off: n on, buf off, b on
+	local d = LogicGraph.debugStart(g, { "a", "n", "buf", "b" }, { n = true, b = true }, { "a" }, { true })
+	for _ = 1, 4 do LogicGraph.debugForward(d) end
+	check("debug: even paths, no glitch", LogicGraph.debugChangeCounts(d, { "b" }).b == 0 and d.state.values.b == true)
+
+	local g2 = mkgraph({
+		nodes = { a = { kind = "input" }, n = { kind = "gate", mode = 4 }, b = { kind = "gate", mode = 2 } },
+		edges = { { "a", "n" }, { "a", "b" }, { "n", "b" } }
+	})
+	local d2 = LogicGraph.debugStart(g2, { "a", "n", "b" }, { n = true, b = true }, { "a" }, { true })
+	for _ = 1, 4 do LogicGraph.debugForward(d2) end
+	check("debug: uneven paths glitch", LogicGraph.debugChangeCounts(d2, { "b" }).b == 2)
+end
+
+do
+	-- timer: delay line starts full of its current value, so a settled timer
+	-- stays quiet until the change reaches it
+	local g = mkgraph({
+		nodes = { a = { kind = "input" }, t = { kind = "timer", delay = 3 }, b = { kind = "gate", mode = 1 } },
+		edges = { { "a", "t" }, { "t", "b" } }
+	})
+	local d = LogicGraph.debugStart(g, { "a", "t", "b" }, { a = true, t = true, b = true }, { "a" }, { false })
+	LogicGraph.debugForward(d)
+	check("debug timer: not out yet", #d.changes[1] == 0 and not LogicGraph.debugSettled(d))
+	LogicGraph.debugForward(d)
+	LogicGraph.debugForward(d)
+	check("debug timer: out after 3 ticks", sorted(d.changes[3]) == "t", sorted(d.changes[3]))
+	LogicGraph.debugForward(d)
+	check("debug timer: b after 4", sorted(d.changes[4]) == "b")
+	LogicGraph.debugBack(d)
+	LogicGraph.debugBack(d)
+	LogicGraph.debugForward(d)
+	LogicGraph.debugForward(d)
+	check("debug timer: replay", d.state.values.b == false and d.state.values.t == false)
+	LogicGraph.debugForward(d)
+	check("debug timer: then settled", LogicGraph.debugSettled(d))
+
+	local same = LogicGraph.debugStart(g, { "a", "t", "b" }, { a = true, t = true, b = true }, { "a" }, { true })
+	check("debug: same inputs = settled at once", #same.changes[0] == 0 and LogicGraph.debugSettled(same))
+end
+
 print(string.format("%d passed, %d failed", passed, failures))
 return failures

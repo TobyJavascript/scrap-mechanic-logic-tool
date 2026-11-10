@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MyGUI type="Layout" version="3.2.0">
+    <Widget type="Widget" skin="HudBackgroundLarge" position_real="0.3300 0.0200 0.3400 0.1300" name="stepPanel">
+        <Property key="NeedMouse" value="false"/>
+        <Property key="NeedKey" value="false"/>
+        <Widget type="TextBox" skin="TextBox" position_real="0.0400 0.0600 0.9200 0.2600" name="stepTick">
+            <Property key="Caption" value=""/>
+            <Property key="TextAlign" value="Left VCenter"/>
+            <Property key="FontName" value="SM_Button"/>
+            <Property key="TextColour" value="1 1 1"/>
+            <Property key="TextShadow" value="true"/>
+            <Property key="TextShadowColour" value="0 0 0"/>
+            <Property key="NeedMouse" value="false"/>
+            <Property key="NeedKey" value="false"/>
+        </Widget>
+        <Widget type="TextBox" skin="TextBox" position_real="0.0400 0.3200 0.9200 0.2000" name="stepOutputs">
+            <Property key="Caption" value=""/>
+            <Property key="TextAlign" value="Left VCenter"/>
+            <Property key="FontName" value="SM_TextLabel"/>
+            <Property key="TextColour" value="1 1 1"/>
+            <Property key="TextShadow" value="true"/>
+            <Property key="TextShadowColour" value="0 0 0"/>
+            <Property key="NeedMouse" value="false"/>
+            <Property key="NeedKey" value="false"/>
+        </Widget>
+        <Widget type="TextBox" skin="TextBox" position_real="0.0400 0.5200 0.9200 0.2000" name="stepInfo">
+            <Property key="Caption" value=""/>
+            <Property key="TextAlign" value="Left VCenter"/>
+            <Property key="FontName" value="SM_TextSmall"/>
+            <Property key="TextColour" value="1 1 1"/>
+            <Property key="TextShadow" value="true"/>
+            <Property key="TextShadowColour" value="0 0 0"/>
+            <Property key="NeedMouse" value="false"/>
+            <Property key="NeedKey" value="false"/>
+        </Widget>
+        <Widget type="TextBox" skin="TextBox" position_real="0.0400 0.7400 0.9200 0.2000" name="stepKeys">
+            <Property key="Caption" value=""/>
+            <Property key="TextAlign" value="Left VCenter"/>
+            <Property key="FontName" value="SM_TextSmall"/>
+            <Property key="TextColour" value="0.75 0.75 0.75"/>
+            <Property key="TextShadow" value="true"/>
+            <Property key="TextShadowColour" value="0 0 0"/>
+            <Property key="NeedMouse" value="false"/>
+            <Property key="NeedKey" value="false"/>
+        </Widget>
+    </Widget>
+    <CodeGeneratorSettings/>
+</MyGUI>

@@ -444,7 +444,7 @@ function LogicGraph.lint(graph)
 end
 
 ---------------------------------------------------------------------------
--- Offline simulation (used for truth tables)
+-- Offline simulation (truth tables, tick debugger)
 ---------------------------------------------------------------------------
 
 local function gateOutput(mode, inputs)
@@ -463,76 +463,284 @@ local function gateOutput(mode, inputs)
 end
 LogicGraph.gateOutput = gateOutput
 
+-- One tick of the network. A state is { values = { [id] = bool },
+-- lines = { [timerId] = { bool ... } } } (a timer's delay line, oldest
+-- first). `forced` = { [id] = bool } holds inputs. Every part computes its
+-- next value from the previous tick's values, like the game. Returns the new
+-- state (the old one is left as it was), the ids that changed, and whether
+-- a timer still holds a change that has yet to come out.
+function LogicGraph.step(graph, s, forced)
+	local values, lines = s.values, s.lines
+	local nextValues, nextLines = {}, {}
+	local changed = {}
+	local busy = false
+	for id, node in pairs(graph) do
+		local v
+		if forced[id] ~= nil then
+			v = forced[id]
+		elseif node.kind == "gate" then
+			local ins = {}
+			for i, p in ipairs(node.parents) do ins[i] = values[p] or false end
+			v = gateOutput(node.mode, ins)
+		elseif node.kind == "timer" then
+			local inp = false
+			for _, p in ipairs(node.parents) do if values[p] then inp = true break end end
+			local line = lines[id] or {}
+			if #line == 0 then
+				v = inp
+				nextLines[id] = line
+			else
+				v = line[1]
+				local nl = {}
+				for i = 2, #line do nl[#nl + 1] = line[i] end
+				nl[#nl + 1] = inp
+				nextLines[id] = nl
+				for _, b in ipairs(nl) do
+					if b ~= inp then busy = true break end
+				end
+			end
+		elseif node.kind == "output" or node.kind == "script" then
+			local inp = false
+			for _, p in ipairs(node.parents) do if values[p] then inp = true break end end
+			v = inp
+		else
+			v = values[id] or false
+		end
+		nextValues[id] = v
+		if v ~= (values[id] or false) then changed[#changed + 1] = id end
+	end
+	return { values = nextValues, lines = nextLines }, changed, busy
+end
+
+-- A starting state: `initial` values (default off), `forced` on top. With
+-- `fill`, a timer's delay line is full of its own current value (a timer
+-- that has been in that state for a while), else all off.
+function LogicGraph.newState(graph, initial, forced, fill)
+	local values, lines = {}, {}
+	for id, node in pairs(graph) do
+		values[id] = initial and initial[id] or false
+		if node.kind == "timer" then
+			local line = {}
+			local b = fill and values[id] or false
+			for i = 1, math.max(0, node.delay - 1) do line[i] = b end
+			lines[id] = line
+		end
+	end
+	for id, v in pairs(forced or {}) do values[id] = v end
+	return { values = values, lines = lines }
+end
+
 -- Simulates the network tick by tick. `forced` = { [id] = bool } holds the
 -- inputs. Timers are modelled as delay lines. Returns the state after
 -- `ticks` ticks (or after it settles), and whether it settled.
 function LogicGraph.simulate(graph, forced, ticks, initial)
-	local state = {}
-	local lines = {}
-	for id, node in pairs(graph) do
-		state[id] = initial and initial[id] or false
-		if node.kind == "timer" then
-			lines[id] = {}
-			for i = 1, math.max(0, node.delay - 1) do lines[id][i] = false end
-		end
-	end
-	for id, v in pairs(forced) do state[id] = v end
-
-	local settled = false
+	local s = LogicGraph.newState(graph, initial, forced, false)
 	local stable = 0
-	local timerInput = {}
 	for _ = 1, ticks do
-		local nextState = {}
-		local changed = false
-		for id, node in pairs(graph) do
-			local v
-			if forced[id] ~= nil then
-				v = forced[id]
-			elseif node.kind == "gate" then
-				local ins = {}
-				for i, p in ipairs(node.parents) do ins[i] = state[p] or false end
-				v = gateOutput(node.mode, ins)
-			elseif node.kind == "timer" then
-				local inp = false
-				for _, p in ipairs(node.parents) do if state[p] then inp = true break end end
-				timerInput[id] = inp
-				local line = lines[id]
-				if #line == 0 then
-					v = inp
-				else
-					v = line[1]
-					table.remove(line, 1)
-					line[#line + 1] = inp
-				end
-			elseif node.kind == "output" or node.kind == "script" then
-				local inp = false
-				for _, p in ipairs(node.parents) do if state[p] then inp = true break end end
-				v = inp
-			else
-				v = state[id] or false
-			end
-			nextState[id] = v
-			if v ~= state[id] then changed = true end
-		end
-		state = nextState
-		if not changed then
+		local changed, busy
+		s, changed, busy = LogicGraph.step(graph, s, forced)
+		if #changed == 0 then
 			-- a timer is still busy while its delay line holds a change
-			local busy = false
-			for id, line in pairs(lines) do
-				for _, b in ipairs(line) do
-					if b ~= (timerInput[id] or false) then busy = true break end
-				end
-			end
 			stable = busy and 0 or stable + 1
-			if stable >= 2 then
-				settled = true
-				break
-			end
+			if stable >= 2 then return s.values, true end
 		else
 			stable = 0
 		end
 	end
-	return state, settled
+	return s.values, false
+end
+
+---------------------------------------------------------------------------
+-- Tick debugger: step a copy of the logic between inputs and outputs one
+-- tick at a time, forward and back.
+---------------------------------------------------------------------------
+
+LogicGraph.DEBUG_MAX_TICKS = 10000
+
+-- `parts` = the ids being looked at (the inputs, the outputs and what is
+-- between them). Everything that can feed them is simulated too, so a clock
+-- or a loop beside them keeps running. `snapshot` = { [id] = bool }: the
+-- values in the game right now. `inputs`/`inputValues`: set to new values at
+-- tick 0. opts.mode:
+--   "hold"  (default) the inputs stay at those values
+--   "pulse" for 1 tick only, then back to what they were (a button tap:
+--           what a toggle memory or an edge detector needs)
+--   "free"  set at tick 0, then they follow their own wiring (to kick a
+--           loop or a memory cell that runs through an input)
+--   "repeat" every opts.every ticks (0, N, 2N ...) the inputs set to 1 get
+--           a 1 tick pulse, off in between; the ones set to 0 stay off
+function LogicGraph.debugStart(graph, parts, snapshot, inputs, inputValues, opts)
+	local mode = opts and opts.mode or "hold"
+	local hold = mode ~= "free"
+	local isInput = {}
+	for _, id in ipairs(inputs) do isInput[id] = true end
+
+	-- parts and everything upstream (not past a held input: it doesn't listen)
+	local sub, queue = {}, {}
+	for _, id in ipairs(parts) do
+		if graph[id] and not sub[id] then
+			sub[id] = graph[id]
+			queue[#queue + 1] = id
+		end
+	end
+	local i = 1
+	while i <= #queue do
+		local u = queue[i]
+		i = i + 1
+		if not (hold and isInput[u]) then
+			for _, p in ipairs(graph[u].parents) do
+				if graph[p] and not sub[p] then
+					sub[p] = graph[p]
+					queue[#queue + 1] = p
+				end
+			end
+		end
+	end
+
+	local start, forced = {}, {}
+	local changed0 = {}
+	for k, id in ipairs(inputs) do
+		if sub[id] then
+			local v = inputValues[k] or false
+			start[id] = v
+			if mode == "hold" then
+				forced[id] = v
+			elseif mode == "pulse" then
+				forced[id] = snapshot[id] or false
+			elseif mode == "repeat" then
+				forced[id] = false
+			end
+			if v ~= (snapshot[id] or false) then changed0[#changed0 + 1] = id end
+		end
+	end
+	local initial = {}
+	for id in pairs(sub) do initial[id] = snapshot[id] or false end
+	for id, v in pairs(start) do initial[id] = v end
+	-- `initial` already has the inputs' tick 0 values (`forced` is for tick 1 on)
+	local s = LogicGraph.newState(sub, initial, nil, true)
+	-- repeat: the inputs on a pulse tick
+	local pulseForced
+	if mode == "repeat" then
+		pulseForced = {}
+		for id, v in pairs(forced) do pulseForced[id] = start[id] or v end
+	end
+	return {
+		graph = sub, forced = forced, state = s,
+		mode = mode, every = math.max(1, math.floor(opts and opts.every or 1)), pulseForced = pulseForced,
+		tick = 0, last = 0,
+		changes = { [0] = changed0 },
+		lines = { [0] = s.lines },
+		busy = { [0] = #changed0 > 0 },
+	}
+end
+
+-- The values at the current tick are toggles away from the neighbouring
+-- ticks (a change flips a bool), so moving through history needs no copies.
+local function flip(values, ids)
+	for _, id in ipairs(ids) do values[id] = not values[id] end
+end
+
+-- The inputs on tick t (t >= 1).
+local function forcedAt(d, t)
+	if d.pulseForced and t % d.every == 0 then return d.pulseForced end
+	return d.forced
+end
+
+-- One tick forward. Returns false (and a reason) when it can't.
+function LogicGraph.debugForward(d)
+	if d.tick < d.last then
+		d.tick = d.tick + 1
+		flip(d.state.values, d.changes[d.tick])
+		d.state.lines = d.lines[d.tick]
+		return true
+	end
+	if d.tick >= LogicGraph.DEBUG_MAX_TICKS then return false, "limit" end
+	local nextState, changed, busy = LogicGraph.step(d.graph, d.state, forcedAt(d, d.tick + 1))
+	d.tick = d.tick + 1
+	d.last = d.tick
+	d.state = nextState
+	d.changes[d.tick] = changed
+	d.lines[d.tick] = nextState.lines
+	d.busy[d.tick] = busy
+	return true
+end
+
+function LogicGraph.debugBack(d)
+	if d.tick == 0 then return false end
+	flip(d.state.values, d.changes[d.tick])
+	d.tick = d.tick - 1
+	d.state.lines = d.lines[d.tick]
+	return true
+end
+
+-- Looks ahead from the current tick (on a copy): in how many ticks each of
+-- `ids` changes next, { [id] = n }, n = 1 for the next tick. Parts that won't
+-- change within `maxTicks` (or before everything settles) aren't in it.
+function LogicGraph.debugLookahead(d, ids, maxTicks)
+	local want, left = {}, 0
+	for _, id in ipairs(ids) do
+		if d.graph[id] and not want[id] then want[id] = true left = left + 1 end
+	end
+	local values = {}
+	for id, v in pairs(d.state.values) do values[id] = v end
+	local s = { values = values, lines = d.state.lines }
+	local out = {}
+	local quiet = 0
+	for n = 1, maxTicks or 64 do
+		local changed, busy
+		s, changed, busy = LogicGraph.step(d.graph, s, forcedAt(d, d.tick + n))
+		for _, id in ipairs(changed) do
+			if want[id] and not out[id] then
+				out[id] = n
+				left = left - 1
+			end
+		end
+		if left == 0 then break end
+		if #changed == 0 and not busy and not d.pulseForced then
+			quiet = quiet + 1
+			if quiet >= 2 then break end
+		else
+			quiet = 0
+		end
+	end
+	return out
+end
+
+-- XOR gates wired to themselves: the community's 1-bit memory (a 1 tick
+-- pulse in flips it, and it holds).
+function LogicGraph.isXorMemory(graph, id)
+	local node = graph[id]
+	if not (node and node.kind == "gate" and node.mode == 2) then return false end
+	for _, p in ipairs(node.parents) do
+		if p == id then return true end
+	end
+	return false
+end
+
+-- Nothing changed this tick and no timer is still holding a change.
+function LogicGraph.debugSettled(d)
+	if d.pulseForced then return false end -- the next pulse is always coming
+	return #d.changes[d.tick] == 0 and not d.busy[d.tick]
+end
+
+-- The last tick where something changed, up to now (nil if none).
+function LogicGraph.debugLastChange(d)
+	for t = d.tick, 0, -1 do
+		if #d.changes[t] > 0 then return t end
+	end
+end
+
+-- How often each of `ids` changed in ticks 1..now (the inputs' own change at
+-- tick 0 doesn't count). More than once = a glitch.
+function LogicGraph.debugChangeCounts(d, ids)
+	local want, counts = {}, {}
+	for _, id in ipairs(ids) do want[id] = true counts[id] = 0 end
+	for t = 1, d.tick do
+		for _, id in ipairs(d.changes[t]) do
+			if want[id] then counts[id] = counts[id] + 1 end
+		end
+	end
+	return counts
 end
 
 -- Truth table of outputs for every combination of inputs (max 10 inputs).

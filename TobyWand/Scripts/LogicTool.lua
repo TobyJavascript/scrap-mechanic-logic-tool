@@ -58,6 +58,8 @@ local COLOR_GLITCH = sm.color.new("ffee00ff")
 local COLOR_PATH = sm.color.new("ffffffff")
 local COLOR_ON = sm.color.new("ff2a2aff")   -- wire carrying an on signal
 local COLOR_OFF = sm.color.new("7a1010ff")  -- wire carrying an off signal
+local COLOR_RISE = sm.color.new("40ff60ff") -- step debugger: turned on this tick
+local COLOR_FALL = sm.color.new("ff4040ff") -- step debugger: turned off this tick
 
 local RANGE = 10
 -- Frames are the part's size plus a padding (m) on every side. Each group
@@ -76,10 +78,39 @@ local MODULE_MAX_OUTPUTS = 32
 local LUT_STYLES = { "auto", "rom", "xor" }
 local LUT_STYLE_NAMES = { auto = "Auto", rom = "ROM", xor = "XOR (PPRM)" }
 -- buttons that open a window on the left (one at a time)
-local LEFT_WINDOWS = { openScript = "script", openSettings = "settings", openModule = "module" }
+local LEFT_WINDOWS = { openScript = "script", openSettings = "settings", openModule = "module", openDebug = "debug" }
 local MODULE_HINT = "Put the inputs in A and the outputs in B (in order), then press Load.\n\n"
 	.. "The tool reads the logic between them and shows it as a table: every input combination "
 	.. "and what the outputs do. Edit the outputs, then Build LUT rebuilds that logic as a clean LUT."
+-- Step debugger
+local DEBUG_SPEEDS = { 0.1, 0.25, 0.5, 1, 2 }  -- Run: seconds per tick
+local DEBUG_SPEED_DEFAULT = 4
+local DEBUG_INPUT_MODES = { "hold", "pulse", "repeat", "free" }
+local DEBUG_INPUT_NAMES = { hold = "Held", pulse = "1 tick pulse", ["repeat"] = "Pulse every N ticks", free = "Free after tick 0" }
+local DEBUG_EVERY_MAX = 10000
+local COLOR_STEADY = sm.color.new("d8b000ff") -- step debugger: on, but didn't change this tick
+local DEBUG_NET_LIMIT = 600     -- changed parts sent to the client per tick
+local DEBUG_MAX_FRAMES = 300    -- changed parts framed in the world
+local DEBUG_LOOKAHEAD = 64      -- countdown labels look this many ticks ahead
+local DEBUG_LOOP_RISE = sm.vec3.new(0, 0, 0.4) -- an arrow into a part from itself starts this far above
+local DEBUG_HINT = "Put the inputs in A and the outputs in B. Type the input values (A0 is the rightmost digit, "
+	.. "missing digits are 0), or press From game and edit a digit. Then Start debug.\n\n"
+	.. "The tool copies the logic between A and B as it is in the game now, sets your inputs, and lets you step "
+	.. "that copy one tick at a time. The creation itself never changes.\n\n"
+	.. "While stepping, with the tool in hand:\n"
+	.. "  Left click    one tick forward\n"
+	.. "  Right click   one tick back\n"
+	.. "  Q             run / pause (at the run speed)\n"
+	.. "  R             stop and open the menu\n\n"
+	.. "Inputs:\n  Held: A stays at your values, like a switch.\n"
+	.. "  1 tick pulse: A has them for one tick, then goes back, like a 1 tick button. A toggle memory needs this.\n"
+	.. "  Pulse every N ticks: the inputs you set to 1 get a 1 tick pulse on tick 0, N, 2N ... (a clock). "
+	.. "The ones set to 0 stay off.\n"
+	.. "  Free after tick 0: A starts at them, then follows its own wiring (a loop or memory through A).\n\n"
+	.. "Arrows show where each change goes next: #40ff60green#ffffff = turned on, #ff4040red#ffffff = turned off. "
+	.. "A framed part changed on this tick. The number over a part is how many ticks until it changes next: "
+	.. "it counts down as you step (1t, green, = next tick). Parts that will not change have none. "
+	.. "An XOR wired to itself is a memory: its label says MEM on or MEM off. #d8b000Yellow#ffffff arrows are wires that are on but did not change."
 local MAX_GRAPH_NODES = 20000
 local PROBE_NET_LIMIT = 1500   -- probe results sent to the client
 local MAX_LABELS = 200         -- world labels shown at once (nearest first)
@@ -124,12 +155,21 @@ local PICK_ALERT = {
 -- part of a list is shown as k - 1. Every name goes through partName.
 local function partName(g, k) return g .. (k - 1) end
 
+local function speedText(seconds)
+	return string.format("%g s per tick", seconds)
+end
+
 local HELP_TEXT = [[CONTROLS
   Click / drag      add to the active group / box select
   Right click       next group
   F + click         pick every matching part (filter: the F: button)
   F + right click   delays from that part; again: delays to it; again: off
   Q                 box select mode: 3D / XY / XZ / YZ layer
+
+STEP DEBUGGER (Debug window, then Start debug)
+  Left / right click   one tick forward / back
+  Q                    run / pause
+  R                    stop
 
 SCRIPTS ARE LUA
 A, B, C are lists of the parts you selected, in order.
@@ -206,7 +246,7 @@ end
 ---------------------------------------------------------------------------
 
 function LogicTool:server_onCreate()
-	self.sv = { undo = {}, pending = {}, lutUndo = {} }
+	self.sv = { undo = {}, pending = {}, lutUndo = {}, debug = {} }
 end
 
 -- Apply a chunk of connect/cut/clear operations from a client.
@@ -459,6 +499,14 @@ local function sameCreation(lists)
 		end
 	end
 	return true
+end
+
+-- On or off in the game right now. isActive is what the game shows; vanilla
+-- parts also report it as power (1/0), so either counts.
+local function partIsOn(inter)
+	if inter:isActive() then return true end
+	local ok, power = pcall(function() return inter.power end)
+	return ok and type(power) == "number" and power ~= 0
 end
 
 local function idsOf(list)
@@ -884,6 +932,153 @@ function LogicTool:sv_analyze(data, player)
 	end
 end
 
+---------------------------------------------------------------------------
+-- SERVER: step debugger (a copy of the logic between A and B, stepped one
+-- tick at a time; see LogicGraph.debugStart)
+---------------------------------------------------------------------------
+
+function LogicTool:sv_debugStart(data, player)
+	local ok, err = pcall(function()
+		local A, B = data.A or {}, data.B or {}
+		if #A == 0 or #B == 0 then
+			self.network:sendToClient(player, "cl_onDebug", { error = "Debug needs the inputs in A and the outputs in B" })
+			return
+		end
+		local seeds = {}
+		for _, list in ipairs({ A, B }) do
+			for _, inter in ipairs(list) do seeds[#seeds + 1] = inter end
+		end
+		local graph, inters = self:sv_buildGraph(seeds)
+		local Aid, Bid = idsOf(A), idsOf(B)
+		local inside = LogicModule.inside(graph, Aid, Bid)
+		local parts, seen = {}, {}
+		for _, list in ipairs({ Aid, Bid, inside.parts }) do
+			for _, id in ipairs(list) do
+				if graph[id] and not seen[id] then
+					seen[id] = true
+					parts[#parts + 1] = id
+				end
+			end
+		end
+		-- what the game shows now
+		local snapshot = {}
+		for id, inter in pairs(inters) do
+			if sm.exists(inter) then snapshot[id] = partIsOn(inter) end
+		end
+		local d = LogicGraph.debugStart(graph, parts, snapshot, Aid, data.inputs or {}, { mode = data.mode, every = data.every })
+		d.inters, d.A, d.B = inters, Aid, Bid
+		d.mems = {}
+		for _, id in ipairs(parts) do
+			if LogicGraph.isXorMemory(graph, id) then d.mems[#d.mems + 1] = id end
+		end
+		-- only what is between A and B is shown; what feeds it runs along unseen
+		d.show = seen
+		local simulated = 0
+		for _ in pairs(d.graph) do simulated = simulated + 1 end
+		self.sv.debug[player.id] = d
+
+		-- gates whose mode couldn't be read never turn on in the copy
+		local unknown = 0
+		for _, id in ipairs(parts) do
+			if graph[id].kind == "gate" and graph[id].mode == nil then unknown = unknown + 1 end
+		end
+		self:sv_debugReply(player, d, { start = true, size = #parts, between = #inside.parts, simulated = simulated,
+			unknown = unknown })
+	end)
+	if not ok then
+		self.network:sendToClient(player, "cl_onDebug", { error = "Debug failed: " .. tostring(err) })
+	end
+end
+
+function LogicTool:sv_debugReply(player, d, r)
+	r = r or {}
+	local values = d.state.values
+	local changed = d.changes[d.tick]
+	r.tick, r.last = d.tick, d.last
+	r.changedCount, r.otherCount = 0, 0
+	r.changed = {}
+	-- shown parts that are on and didn't change: their wires show yellow
+	local didChange = {}
+	for _, id in ipairs(changed) do didChange[id] = true end
+	r.steady = {}
+	for id in pairs(d.show) do
+		if values[id] and not didChange[id] and #r.steady < DEBUG_NET_LIMIT then
+			local inter = d.inters[id]
+			if inter and sm.exists(inter) then r.steady[#r.steady + 1] = inter end
+		end
+	end
+	for _, id in ipairs(changed) do
+		if d.show[id] then
+			r.changedCount = r.changedCount + 1
+			local inter = d.inters[id]
+			if #r.changed < DEBUG_NET_LIMIT and inter and sm.exists(inter) then
+				r.changed[#r.changed + 1] = { inter = inter, on = values[id] or false }
+			end
+		else
+			r.otherCount = r.otherCount + 1
+		end
+	end
+	-- binary numbers, highest first: A0 and B0 are the rightmost digits
+	local function bits(ids)
+		local o = {}
+		for k = #ids, 1, -1 do o[#o + 1] = values[ids[k]] and "1" or "0" end
+		return table.concat(o)
+	end
+	r.inputs, r.outputs = bits(d.A), bits(d.B)
+	r.settled = LogicGraph.debugSettled(d)
+	r.lastChange = LogicGraph.debugLastChange(d)
+	local counts = LogicGraph.debugChangeCounts(d, d.B)
+	r.glitches = {}
+	for k, id in ipairs(d.B) do
+		if counts[id] > 1 then r.glitches[#r.glitches + 1] = { k = k, n = counts[id] } end
+	end
+	-- XOR memories: on or off right now
+	r.mems = {}
+	for _, id in ipairs(d.mems) do
+		local inter = d.inters[id]
+		if #r.mems < DEBUG_NET_LIMIT and inter and sm.exists(inter) then
+			r.mems[#r.mems + 1] = { inter = inter, on = values[id] or false }
+		end
+	end
+	-- countdown: in how many ticks each shown part changes next
+	local showIds = {}
+	for id in pairs(d.show) do showIds[#showIds + 1] = id end
+	local ahead = LogicGraph.debugLookahead(d, showIds, DEBUG_LOOKAHEAD)
+	r.next = {}
+	r.soonest = nil
+	for id, n in pairs(ahead) do
+		local inter = d.inters[id]
+		if #r.next < DEBUG_NET_LIMIT and inter and sm.exists(inter) then r.next[#r.next + 1] = { inter = inter, n = n } end
+		if not r.soonest or n < r.soonest then r.soonest = n end
+	end
+	self.network:sendToClient(player, "cl_onDebug", r)
+end
+
+function LogicTool:sv_debugStep(data, player)
+	local d = self.sv.debug[player.id]
+	if not d then
+		self.network:sendToClient(player, "cl_onDebug", { error = "The debug session has ended", stop = true })
+		return
+	end
+	local ok, err = pcall(function()
+		local moved, why
+		if data.dir < 0 then
+			moved = LogicGraph.debugBack(d)
+		else
+			moved, why = LogicGraph.debugForward(d)
+		end
+		self:sv_debugReply(player, d, { edge = not moved and (why or "start") or nil })
+	end)
+	if not ok then
+		self.sv.debug[player.id] = nil
+		self.network:sendToClient(player, "cl_onDebug", { error = "Debug failed: " .. tostring(err), stop = true })
+	end
+end
+
+function LogicTool:sv_debugStop(_, player)
+	self.sv.debug[player.id] = nil
+end
+
 -- F+click with the "same mode/time" filter: every part in the creation with
 -- the same type and the same gate mode or timer time (and colour, if asked).
 function LogicTool:sv_pickSame(data, player)
@@ -954,6 +1149,12 @@ function LogicTool:client_onCreate()
 		lutPreview = nil,                      -- { effects = {} } while a build preview is shown
 		verifyRows = nil,                      -- while building: the table the new logic must match
 		verify = nil,                          -- after a build: { rows, wait, tries } (see cl_updateVerify)
+		debug = nil,                           -- while stepping: { view =, running =, timer =, pending = }
+		debugSpeed = DEBUG_SPEED_DEFAULT,      -- setting: index in DEBUG_SPEEDS
+		debugInputMode = 1,                    -- setting: index in DEBUG_INPUT_MODES
+		debugEveryText = "4",                  -- setting: N for "Pulse every N ticks"
+		debugInputText = "",                   -- the debug window's input digits
+		debugFrames = {},                      -- frames on the parts that changed this tick
 		press = nil,
 	}
 
@@ -969,12 +1170,21 @@ function LogicTool:client_onCreate()
 	local gui = sm.gui.createGuiFromLayout("$CONTENT_DATA/Gui/Layouts/LogicTool.layout", false)
 	for _, name in ipairs({ "close", "active", "clearActive", "clearAll", "undo", "sortX", "sortY", "sortZ", "reverse",
 		"allToAll", "zip", "chain", "wireMode", "clearOut", "clearIn", "timing", "truth", "lint", "lines", "labels",
-		"clearMarks", "example", "run", "help", "pickBy", "probeFwd", "probeBack", "openScript", "closeScript", "openSettings", "closeSettings", "openModule", "closeModule", "loadModule", "resetModule", "lutCompress", "lutEven", "lutStyle", "buildLut", "cancelLut", "undoLut", "boxMode", "format" }) do
+		"clearMarks", "example", "run", "help", "pickBy", "probeFwd", "probeBack", "openScript", "closeScript", "openSettings", "closeSettings", "openModule", "closeModule", "loadModule", "resetModule", "lutCompress", "lutEven", "lutStyle", "buildLut", "cancelLut", "undoLut", "boxMode", "format",
+		"openDebug", "closeDebug", "debugFromGame", "debugSpeed", "debugHold", "debugStart" }) do
 		gui:setButtonCallback(name, "cl_onButton")
 	end
 	gui:setTextChangedCallback("script", "cl_onScriptChanged")
 	gui:setTextChangedCallback("moduleTable", "cl_onModuleTableChanged")
+	gui:setTextChangedCallback("debugInputs", "cl_onDebugInputsChanged")
+	gui:setTextChangedCallback("debugEvery", "cl_onDebugEveryChanged")
+	gui:setText("debugEvery", self.cl.debugEveryText)
+	gui:setText("debugInfo", DEBUG_HINT)
 	self.cl.gui = gui
+
+	-- the step debugger panel: a HUD, so the mouse keeps turning the view
+	self.cl.stepGui = sm.gui.createGuiFromLayout("$CONTENT_DATA/Gui/Layouts/LogicTool_Step.layout", false,
+		{ isHud = true, isInteractive = false, needsCursor = false })
 
 	self.cl.script = LogicScript.examples[1].code
 	self:cl_showScript()
@@ -995,6 +1205,7 @@ function LogicTool:client_onDestroy()
 		pcall(lab.destroy, lab)
 	end
 	if self.cl.gui then pcall(self.cl.gui.destroy, self.cl.gui) end
+	if self.cl.stepGui then pcall(self.cl.stepGui.destroy, self.cl.stepGui) end
 end
 
 ---------------------------------------------------------------------------
@@ -1393,6 +1604,22 @@ end
 function LogicTool:client_onEquippedUpdate(primary, secondary, forceBuild)
 	if not self.tool:isLocal() then return false, false end
 
+	if self.cl.debug then
+		-- stepping: the mouse buttons move through the ticks
+		self.cl.hoverInter = nil
+		self.cl.press = nil
+		sm.gui.setInteractionText("", sm.gui.getKeyBinding("Create", true), "Step",
+			sm.gui.getKeyBinding("Attack", true), "Back")
+		if primary == sm.tool.interactState.start then
+			self.cl.debug.running = false
+			self:cl_debugStep(1)
+		elseif secondary == sm.tool.interactState.start then
+			self.cl.debug.running = false
+			self:cl_debugStep(-1)
+		end
+		return true, true
+	end
+
 	local pos, shape, inter = self:cl_raycast()
 	local logicInter = inter and isLogicCapable(inter) and inter or nil
 	self.cl.hoverInter = logicInter
@@ -1469,6 +1696,12 @@ function LogicTool:client_onEquippedUpdate(primary, secondary, forceBuild)
 end
 
 function LogicTool:client_onReload()
+	if self.cl.debug then
+		self:cl_stopDebug()
+		self:cl_refreshGui()
+		self.cl.gui:open()
+		return true
+	end
 	if self.cl.gui:isActive() then
 		self.cl.gui:close()
 	else
@@ -1480,6 +1713,18 @@ end
 
 -- Q: next box select mode (also while dragging, like the game's block drag)
 function LogicTool:client_onToggle()
+	if self.cl.debug then
+		local d = self.cl.debug
+		d.running = not d.running
+		d.timer = 0
+		if d.running and d.view and d.view.settled then
+			sm.gui.displayAlertText("Settled: nothing more happens", 1.5)
+			d.running = false
+		end
+		sm.audio.play("ConnectTool - Rotate")
+		self:cl_showDebugHud()
+		return true
+	end
 	self.cl.boxMode = self.cl.boxMode % #BOX_MODES + 1
 	local mode = BOX_MODES[self.cl.boxMode]
 	local press = self.cl.press
@@ -2265,6 +2510,9 @@ function LogicTool:cl_refreshGui()
 	gui:setText("openScript", left == "script" and "Hide script" or "< Script")
 	gui:setText("openSettings", left == "settings" and "Hide settings" or "< Settings")
 	gui:setText("openModule", left == "module" and "Hide module" or "< Module")
+	gui:setText("openDebug", left == "debug" and "Hide debug" or "< Debug")
+	gui:setText("debugSpeed", speedText(DEBUG_SPEEDS[self.cl.debugSpeed]))
+	gui:setText("debugHold", DEBUG_INPUT_NAMES[DEBUG_INPUT_MODES[self.cl.debugInputMode]])
 	gui:setText("buildLut", self.cl.lutPreview and "Apply build" or "Build LUT")
 	gui:setText("lutCompress", self.cl.lutCompress and "Stacked" or "Spread out")
 	gui:setText("lutEven", self.cl.lutEven and "Even timing" or "Fewer gates")
@@ -2272,6 +2520,7 @@ function LogicTool:cl_refreshGui()
 	gui:setVisible("scriptWindow", left == "script")
 	gui:setVisible("settingsWindow", left == "settings")
 	gui:setVisible("moduleWindow", left == "module")
+	gui:setVisible("debugWindow", left == "debug")
 end
 
 function LogicTool:cl_onButton(name)
@@ -2345,7 +2594,7 @@ function LogicTool:cl_onButton(name)
 		-- one window on the left at a time; the same button again hides it
 		local w = LEFT_WINDOWS[name]
 		self.cl.leftWindow = self.cl.leftWindow ~= w and w or nil
-	elseif name == "closeScript" or name == "closeSettings" or name == "closeModule" then
+	elseif name == "closeScript" or name == "closeSettings" or name == "closeModule" or name == "closeDebug" then
 		self.cl.leftWindow = nil
 	elseif name == "buildLut" then
 		self:cl_buildLut()
@@ -2388,8 +2637,199 @@ function LogicTool:cl_onButton(name)
 		self:cl_startProbe(self:cl_inters("A"), name == "probeBack", nil)
 	elseif name == "help" then
 		self:cl_setResult(HELP_TEXT)
+	elseif name == "debugSpeed" then
+		self.cl.debugSpeed = self.cl.debugSpeed % #DEBUG_SPEEDS + 1
+	elseif name == "debugHold" then
+		self.cl.debugInputMode = self.cl.debugInputMode % #DEBUG_INPUT_MODES + 1
+	elseif name == "debugFromGame" then
+		local digits = {}
+		local A = self.cl.groups.A
+		for k = #A, 1, -1 do
+			digits[#digits + 1] = sm.exists(A[k].inter) and A[k].inter:isActive() and "1" or "0"
+		end
+		self.cl.debugInputText = table.concat(digits)
+		self.cl.gui:setText("debugInputs", self.cl.debugInputText)
+	elseif name == "debugStart" then
+		self:cl_startDebug()
 	end
 	self:cl_refreshGui()
+end
+
+---------------------------------------------------------------------------
+-- CLIENT: step debugger
+---------------------------------------------------------------------------
+
+-- "0101" -> { A0 = true, A1 = false, ... } as a list. A0 is the rightmost
+-- digit; missing digits on the left are 0.
+local function parseDebugInputs(text, n)
+	local digits = text:gsub("[%s_]", "")
+	if digits:find("[^01]") then return nil, "Inputs: use only 0 and 1" end
+	if #digits > n then return nil, string.format("Inputs: %d digits, but A has %d part(s)", #digits, n) end
+	digits = string.rep("0", n - #digits) .. digits
+	local values = {}
+	for k = 1, n do values[k] = digits:sub(n - k + 1, n - k + 1) == "1" end
+	return values
+end
+
+function LogicTool:cl_onDebugInputsChanged(_, text)
+	self.cl.debugInputText = text
+end
+
+function LogicTool:cl_onDebugEveryChanged(_, text)
+	self.cl.debugEveryText = text
+end
+
+function LogicTool:cl_setDebugInfo(text)
+	if self.cl.gui then self.cl.gui:setText("debugInfo", text) end
+end
+
+function LogicTool:cl_startDebug()
+	local A, B = self:cl_inters("A"), self:cl_inters("B")
+	local err
+	if #A == 0 or #B == 0 then
+		err = "Debug needs the inputs in A and the outputs in B"
+	end
+	local inputs
+	if not err then inputs, err = parseDebugInputs(self.cl.debugInputText or "", #A) end
+	local mode = DEBUG_INPUT_MODES[self.cl.debugInputMode]
+	local every = tonumber(((self.cl.debugEveryText or ""):gsub("%s", "")))
+	if not err and mode == "repeat" and not (every and every >= 1 and every <= DEBUG_EVERY_MAX and every == math.floor(every)) then
+		err = "Pulse every: type a whole number of ticks (1 or more)"
+	end
+	if err then
+		self:cl_setDebugInfo("#ff6060" .. err .. "#ffffff\n\n" .. DEBUG_HINT)
+		sm.gui.displayAlertText(err, 2.5)
+		return
+	end
+	if self.cl.debug then self:cl_stopDebug() end
+	self:cl_setDebugInfo("Starting ...")
+	self.network:sendToServer("sv_debugStart", { A = A, B = B, inputs = inputs, mode = mode, every = every })
+end
+
+function LogicTool:cl_debugStep(dir)
+	local d = self.cl.debug
+	if not d or d.pending then return end
+	d.pending = true
+	self.network:sendToServer("sv_debugStep", { dir = dir })
+end
+
+function LogicTool:cl_clearDebugFrames()
+	for _, e in ipairs(self.cl.debugFrames) do
+		if sm.exists(e) then e:destroy() end
+	end
+	self.cl.debugFrames = {}
+end
+
+function LogicTool:cl_stopDebug()
+	if not self.cl.debug then return end
+	self.network:sendToServer("sv_debugStop")
+	local view = self.cl.debug.view
+	self.cl.debug = nil
+	self:cl_clearDebugFrames()
+	if self.cl.stepGui and self.cl.stepGui:isActive() then self.cl.stepGui:close() end
+	if view then
+		self:cl_setDebugInfo(string.format("Stopped at tick %d: B = %s%s#ffffff\n\n", view.tick, GROUP_HEX.B, view.outputs)
+			.. DEBUG_HINT)
+	end
+end
+
+function LogicTool:cl_onDebug(r)
+	if r.error then
+		sm.gui.displayAlertText(r.error, 2.5)
+		self:cl_setDebugInfo("#ff6060" .. r.error .. "#ffffff\n\n" .. DEBUG_HINT)
+		if r.stop then self:cl_stopDebug() end
+		if self.cl.debug then self.cl.debug.pending = false end
+		return
+	end
+	if r.start then
+		self.cl.debug = { running = false, timer = 0, pending = false }
+		if self.cl.gui:isActive() then self.cl.gui:close() end
+		local extra = r.simulated - r.size
+		self:cl_setDebugInfo(string.format("Showing %d part(s): A, B and %d between them.", r.size, r.between)
+			.. (extra > 0 and string.format(" %d more part(s) feed them and run along unseen.", extra) or "")
+			.. ((r.unknown or 0) > 0 and string.format("\n#ff6060%d gate(s) have an unknown mode and stay off in the copy.#ffffff", r.unknown) or "")
+			.. "\n\n" .. DEBUG_HINT)
+		if (r.unknown or 0) > 0 then
+			sm.gui.displayAlertText(string.format("#ff6060%d gate(s) with unknown mode: they stay off", r.unknown), 4)
+		end
+		sm.gui.displayAlertText("Debug: left click = step, right click = back, Q = run, R = stop", 4)
+	end
+	local d = self.cl.debug
+	if not d then return end
+	d.pending = false
+	d.view = r
+	self.cl.labelTimer = 0 -- new countdown labels on the next frame
+	if r.edge == "start" then
+		sm.gui.displayAlertText("Already at tick 0", 1)
+	elseif r.edge == "limit" then
+		sm.gui.displayAlertText("Tick limit reached", 1.5)
+		d.running = false
+	end
+	if r.settled and d.running then
+		d.running = false
+		sm.gui.displayAlertText("Settled", 1.5)
+	end
+
+	-- frames on the parts that changed this tick
+	self:cl_clearDebugFrames()
+	local show = self.tool:isEquipped()
+	for _, c in ipairs(r.changed) do
+		if #self.cl.debugFrames >= DEBUG_MAX_FRAMES then break end
+		local inter = c.inter
+		if sm.exists(inter) then
+			local e = sm.effect.createEffect("ShapeRenderable", inter)
+			e:setParameter("uuid", FRAME_UUID)
+			e:setParameter("color", c.on and COLOR_RISE or COLOR_FALL)
+			e:setScale(frameScale(inter:getShape(), FLAG_PAD))
+			if show then e:start() end
+			self.cl.debugFrames[#self.cl.debugFrames + 1] = e
+		end
+	end
+	self:cl_showDebugHud()
+end
+
+function LogicTool:cl_showDebugHud()
+	local gui, d = self.cl.stepGui, self.cl.debug
+	if not (gui and d and d.view) then return end
+	local v = d.view
+	local state = d.running and ("#40ff60running#ffffff, " .. speedText(DEBUG_SPEEDS[self.cl.debugSpeed])) or "paused"
+	gui:setText("stepTick", string.format("Tick %d   #a0a0a0%s", v.tick, state))
+	gui:setText("stepOutputs", string.format("%sA#ffffff %s     %sB#ffffff %s", GROUP_HEX.A, v.inputs, GROUP_HEX.B, v.outputs))
+	local info
+	if v.settled then
+		if not v.lastChange then
+			info = "#ffcc40Nothing changes: A already has these values in the game#ffffff"
+		else
+			info = string.format("#80ff80Settled#ffffff: last change on tick %d", v.lastChange)
+		end
+	elseif v.changedCount == 0 and v.otherCount > 0 then
+		info = string.format("Nothing changed here (%d part(s) feeding it did)", v.otherCount)
+	elseif v.changedCount == 0 then
+		info = v.soonest and string.format("Nothing changed: next change in %dt", v.soonest)
+			or "Nothing changed (a timer is still counting)"
+	else
+		info = string.format("%d part(s) changed", v.changedCount)
+	end
+	if #v.glitches > 0 then
+		local names = {}
+		for _, gl in ipairs(v.glitches) do names[#names + 1] = string.format("B%d (%dx)", gl.k - 1, gl.n) end
+		info = info .. "   #ffee00Glitch: " .. table.concat(names, ", ") .. "#ffffff"
+	end
+	gui:setText("stepInfo", info)
+	gui:setText("stepKeys", "Left click step   Right click back   Q run/pause   R stop")
+end
+
+-- The step panel shows while debugging with the tool in hand.
+function LogicTool:cl_updateStepHud(equipped)
+	local gui = self.cl.stepGui
+	if not gui then return end
+	local want = self.cl.debug ~= nil and equipped
+	if want and not gui:isActive() then
+		self:cl_showDebugHud()
+		gui:open()
+	elseif not want and gui:isActive() then
+		gui:close()
+	end
 end
 
 ---------------------------------------------------------------------------
@@ -2407,6 +2847,9 @@ function LogicTool:cl_rebuildMarkers()
 	end
 	for _, f in pairs(self.cl.flags) do
 		if sm.exists(f.effect) and not f.effect:isPlaying() then f.effect:start() end
+	end
+	for _, e in ipairs(self.cl.debugFrames) do
+		if sm.exists(e) and not e:isPlaying() then e:start() end
 	end
 end
 
@@ -2426,6 +2869,9 @@ function LogicTool:cl_hideWorldVisuals()
 	end
 	for _, lab in ipairs(self.cl.labels) do
 		lab:close()
+	end
+	for _, e in ipairs(self.cl.debugFrames) do
+		if sm.exists(e) then e:stop() end
 	end
 end
 
@@ -2486,7 +2932,32 @@ end
 
 function LogicTool:cl_updateLines()
 	local n = 1
-	if self.cl.showLines then
+	local view = self.cl.debug and self.cl.debug.view
+	if view then
+		-- stepping: only this tick's changes, an arrow to every part each one
+		-- feeds (where the change goes next). B is the end, so no arrows out of it.
+		local isB = {}
+		for _, e in ipairs(self.cl.groups.B) do isB[e.inter.id] = true end
+		local function arrows(inter, color)
+			if not sm.exists(inter) or isB[inter.id] then return end
+			local from = inter:getShape().worldPosition
+			for _, child in ipairs(inter:getChildren(LOGIC)) do
+				if n > MAX_LINES - 1 then return end
+				local cs = child:getShape()
+				if cs and sm.exists(cs) then
+					local to = cs.worldPosition
+					local start = from
+					-- wired to itself, or stacked in the same spot: come in from above
+					if (to - from):length() < 0.05 then start = to + DEBUG_LOOP_RISE end
+					n = self:cl_connection(n, start, to, color)
+				end
+			end
+		end
+		-- this tick's changes first (they matter most if the pool runs out)
+		for _, c in ipairs(view.changed) do arrows(c.inter, c.on and COLOR_RISE or COLOR_FALL) end
+		for _, inter in ipairs(view.steady or {}) do arrows(inter, COLOR_STEADY) end
+	end
+	if self.cl.showLines and not view then
 		local done = {}
 		local function draw(p, c)
 			if n > MAX_LINES - 1 then return end
@@ -2509,7 +2980,7 @@ function LogicTool:cl_updateLines()
 		end
 	end
 
-	local path = self.cl.path
+	local path = view and {} or self.cl.path
 	for i = 1, #path - 1 do
 		if n > MAX_LINES - 1 then break end
 		local a, b = path[i], path[i + 1]
@@ -2554,6 +3025,27 @@ local LABEL_STEP = 0.12  -- extra height per stacked label (m)
 -- Order numbers are the position in the group: the order you picked the
 -- parts in, until you sort or reverse the group.
 function LogicTool:cl_labelCandidates()
+	-- stepping: ticks until each part changes next (counts down every step)
+	local view = self.cl.debug and self.cl.debug.view
+	if view then
+		local out, byId = {}, {}
+		-- XOR memories always say what they hold, plus their countdown if any
+		for _, m in ipairs(view.mems or {}) do
+			local e = { inter = m.inter, text = m.on and "#d8b000MEM on" or "#909090MEM off" }
+			out[#out + 1] = e
+			byId[m.inter.id] = e
+		end
+		for _, e in ipairs(view.next or {}) do
+			local t = (e.n == 1 and "#40ff60" or "#ffffff") .. e.n .. "t"
+			local mem = byId[e.inter.id]
+			if mem then
+				mem.text = mem.text .. " " .. t
+			else
+				out[#out + 1] = { inter = e.inter, text = t }
+			end
+		end
+		return out
+	end
 	if self.cl.probe then return self.cl.probe.entries end
 	local mode = LABEL_MODES[self.cl.labelMode]
 	local out = {}
@@ -2664,7 +3156,17 @@ function LogicTool:client_onUpdate(dt)
 			self:cl_hideWorldVisuals()
 		end
 	end
+	self:cl_updateStepHud(equipped)
 	if not equipped then return end
+
+	local dbg = self.cl.debug
+	if dbg and dbg.running and not dbg.pending then
+		dbg.timer = dbg.timer + dt
+		if dbg.timer >= DEBUG_SPEEDS[self.cl.debugSpeed] then
+			dbg.timer = 0
+			self:cl_debugStep(1)
+		end
+	end
 
 	self:cl_prune()
 

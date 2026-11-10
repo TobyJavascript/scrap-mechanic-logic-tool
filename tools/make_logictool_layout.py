@@ -2,7 +2,8 @@
 
     python3 tools/make_logictool_layout.py
 
-Writes TobyWand/Gui/Layouts/LogicTool.layout and LogicTool_Label.layout.
+Writes TobyWand/Gui/Layouts/LogicTool.layout, LogicTool_Label.layout and
+LogicTool_Step.layout (the step debugger HUD).
 Positions are position_real (0..1, relative to the parent widget).
 """
 import os
@@ -100,7 +101,8 @@ def main_layout():
     kids.append(button(1 - PAD - 0.2, y + 0.005, 0.2, 0.035, "Close", "close", skin=CLOSE_SKIN))
     y += 0.055
     # windows that open on the left (one at a time)
-    kids += button_row(y, [("openScript", "< Script"), ("openSettings", "< Settings"), ("openModule", "< Module")])
+    kids += button_row(y, [("openScript", "< Script"), ("openSettings", "< Settings"), ("openModule", "< Module"),
+                           ("openDebug", "< Debug")])
     y += ROW_H + GAP + 0.005
 
     # Groups
@@ -120,14 +122,6 @@ def main_layout():
     kids += button_row(y, [("allToAll", "All > All"), ("zip", "Zip 1:1"), ("chain", "Chain: A"), ("undo", "Undo")])
     y += ROW_H + GAP
     kids += button_row(y, [("wireMode", "Mode: Connect"), ("clearIn", "Clear inputs: A"), ("clearOut", "Clear outputs: A")])
-    y += ROW_H + GAP + 0.005
-
-    # Analyse
-    kids.append(section(y, "ANALYSE"))
-    y += 0.032
-    kids += button_row(y, [("timing", "Timing A > B"), ("truth", "Truth table"), ("lint", "Check creation")])
-    y += ROW_H + GAP
-    kids += button_row(y, [("probeFwd", "Delays from A"), ("probeBack", "Delays to A"), ("clearMarks", "Clear marks")])
     y += ROW_H + GAP + 0.005
 
     # Results
@@ -160,7 +154,7 @@ def main_layout():
     sk.append(edit_box(PAD, y, 1 - 2 * PAD, 1 - y - 0.02, "script"))
     script = W("Widget", "HudBackgroundLarge", 0.02, 0.06, 0.36, 0.88, "scriptWindow",
                props=[("Visible", "false")], children=sk)
-    return [panel, script, settings_window(), module_window()]
+    return [panel, script, settings_window(), module_window(), debug_window()]
 
 
 def module_window():
@@ -218,6 +212,75 @@ def settings_window():
              props=[("Visible", "false")], children=st)
 
 
+def line_edit(x, y, w, h, name, caption=""):
+    """A one-line text field."""
+    bg = W("Widget", "SearchBarBackground", x, y, w, h)
+    bg.children.append(W("EditBox", "EditBoxStretch", 0.03, 0.05, 0.94, 0.9, name, [
+        ("MultiLine", "false"), ("TextAlign", "Left VCenter"), ("FontName", "SM_TextLabel"),
+        ("TextColour", "1 1 1"), ("MaxTextLength", "64"), ("Caption", caption),
+    ]))
+    return bg
+
+
+def debug_window():
+    """Debug (left, hidden until opened): the analysis buttons, and the tick
+    debugger that steps the logic between A and B."""
+    dk = []
+    y = 0.015
+    dk.append(text(PAD, y, 0.4, 0.045, "DEBUG", font="SM_Button"))
+    dk.append(button(1 - PAD - 0.2, y + 0.005, 0.2, 0.035, "Hide", "closeDebug", skin=CLOSE_SKIN))
+    y += 0.055
+
+    dk.append(section(y, "ANALYSE   (results on the right)"))
+    y += 0.032
+    dk += button_row(y, [("timing", "Timing A > B"), ("truth", "Truth table"), ("lint", "Check creation")])
+    y += ROW_H + GAP
+    dk += button_row(y, [("probeFwd", "Delays from A"), ("probeBack", "Delays to A"), ("clearMarks", "Clear marks")])
+    y += ROW_H + GAP + 0.01
+
+    dk.append(section(y, "STEP   A  >  B, one tick at a time"))
+    y += 0.032
+    split = 0.3
+    dk.append(text(PAD, y, split - PAD, ROW_H, "Inputs A", font="SM_TextLabel"))
+    dk.append(line_edit(split, y, 0.38, ROW_H, "debugInputs"))
+    dk.append(button(split + 0.4, y, 1 - PAD - split - 0.4, ROW_H, "From game", "debugFromGame"))
+    y += ROW_H + GAP
+    dk.append(text(PAD, y, split - PAD, ROW_H, "Run speed", font="SM_TextLabel"))
+    dk.append(button(split, y, 1 - PAD - split, ROW_H, "1 s per tick", "debugSpeed"))
+    y += ROW_H + GAP
+    dk.append(text(PAD, y, split - PAD, ROW_H, "Input mode", font="SM_TextLabel"))
+    dk.append(button(split, y, 1 - PAD - split, ROW_H, "Held", "debugHold"))
+    y += ROW_H + GAP
+    dk.append(text(PAD, y, split - PAD, ROW_H, "Pulse every", font="SM_TextLabel"))
+    dk.append(line_edit(split, y, 0.2, ROW_H, "debugEvery"))
+    dk.append(text(split + 0.22, y, 1 - PAD - split - 0.22, ROW_H, "ticks (Pulse every mode)", font="SM_TextSmall",
+                   colour="0.7 0.7 0.7"))
+    y += ROW_H + GAP
+    dk += button_row(y, [("debugStart", "Start debug")])
+    y += ROW_H + GAP + 0.005
+    dk.append(edit_box(PAD, y, 1 - 2 * PAD, 1 - y - 0.02, "debugInfo", read_only=True))
+    return W("Widget", "HudBackgroundLarge", 0.02, 0.06, 0.36, 0.88, "debugWindow",
+             props=[("Visible", "false")], children=dk)
+
+
+def step_hud():
+    """The small panel shown while stepping (a HUD: no mouse, you keep
+    looking around). Top middle of the screen."""
+    def line(y, h, name, font, colour="1 1 1"):
+        return W("TextBox", "TextBox", 0.04, y, 0.92, h, name, [
+            ("Caption", ""), ("TextAlign", "Left VCenter"), ("FontName", font), ("TextColour", colour),
+            ("TextShadow", "true"), ("TextShadowColour", "0 0 0"), ("NeedMouse", "false"), ("NeedKey", "false"),
+        ])
+    kids = [
+        line(0.06, 0.26, "stepTick", "SM_Button"),
+        line(0.32, 0.2, "stepOutputs", "SM_TextLabel"),
+        line(0.52, 0.2, "stepInfo", "SM_TextSmall"),
+        line(0.74, 0.2, "stepKeys", "SM_TextSmall", "0.75 0.75 0.75"),
+    ]
+    return W("Widget", "HudBackgroundLarge", 0.33, 0.02, 0.34, 0.13, "stepPanel",
+             [("NeedMouse", "false"), ("NeedKey", "false")], kids)
+
+
 def write(name, roots):
     os.makedirs(ROOT, exist_ok=True)
     if not isinstance(roots, list):
@@ -248,3 +311,4 @@ def label_layout():
 if __name__ == "__main__":
     write("LogicTool.layout", main_layout())
     write("LogicTool_Label.layout", label_layout())
+    write("LogicTool_Step.layout", step_hud())

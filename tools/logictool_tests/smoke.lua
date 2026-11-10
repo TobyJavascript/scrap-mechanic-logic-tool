@@ -254,7 +254,7 @@ sm = {
 			return { nb }
 		end,
 	},
-	json = { writeJsonString = function(t)
+	json = { save = function(t, path) assert(type(t) == "table" and path:find("$CONTENT_DATA", 1, true)) end, writeJsonString = function(t)
 		-- deep copy, so later edits to `t` don't leak into the "string"
 		local function copy(v)
 			if type(v) ~= "table" then return v end
@@ -298,7 +298,7 @@ dofile("$CONTENT_DATA/Scripts/LogicTool.lua")
 
 -- no accidental globals from here on
 local allowed = { CAM = true, LogicTool = true, LogicScript = true, LogicGraph = true, LogicModule = true, SERVER = true, clamp = true,
-	JSON_STORE = true, IMPORTS = true }
+	JSON_STORE = true, IMPORTS = true, DBG = true }
 setmetatable(_G, {
 	__newindex = function(t, k, v)
 		if not allowed[k] then error("global write: " .. tostring(k), 2) end
@@ -783,6 +783,112 @@ check("build: all-0 warning", (tool.cl.gui.texts.moduleInfo or ""):find("only re
 step("build: cancel all-0", function() press("cancelLut") end)
 step("module window closes", function() press("closeModule") end)
 check("module window hidden", tool.cl.gui.visible.moduleWindow == false)
+
+-- step debugger: sw -> g1 (OR) -> out (OR), all off in the game
+step("debug setup", function()
+	press("clearAll")
+	-- its own creation (the first one was rebuilt by the LUT tests)
+	local nb = setmetatable({ id = newId(), worldPosition = vec(0, 0, 0), worldRotation = quat(), shapes = {} }, Body)
+	nb.creation = { nb }
+	local sw = addPart(UUID_SWITCH, 10, 0, 0, nil, nil, nb)
+	local g1 = addPart(UUID_GATE, 11, 0, 0, { mode = 1 }, nil, nb)
+	local out = addPart(UUID_GATE, 12, 0, 0, { mode = 1 }, nil, nb)
+	SERVER = true
+	sw:connect(g1)
+	g1:connect(out)
+	SERVER = false
+	DBG = { sw = sw, g1 = g1, out = out }
+	tool:cl_add("A", sw, sw.shape)
+	tool:cl_add("B", out, out.shape)
+end)
+step("debug window", function() press("openDebug") end)
+check("debug window shown", tool.cl.gui.visible.debugWindow == true and tool.cl.gui.texts.openDebug == "Hide debug")
+check("debug speed default", tool.cl.gui.texts.debugSpeed == "1 s per tick", tool.cl.gui.texts.debugSpeed)
+step("debug from game", function() press("debugFromGame") end)
+check("from game = 0", tool.cl.gui.texts.debugInputs == "0", tool.cl.gui.texts.debugInputs)
+step("debug bad inputs", function() tool:cl_onDebugInputsChanged(nil, "12") press("debugStart") end)
+check("bad inputs refused", tool.cl.debug == nil and tool.cl.gui.texts.debugInfo:find("only 0 and 1", 1, true))
+step("debug start", function()
+	tool.cl.gui:open()
+	tool:cl_onDebugInputsChanged(nil, "1")
+	press("debugStart")
+end)
+check("debug running", tool.cl.debug ~= nil and tool.cl.debug.view.tick == 0 and not tool.cl.gui:isActive())
+check("tick 0 = the input", tool.cl.debug and #tool.cl.debug.view.changed == 1 and tool.cl.debug.view.changed[1].inter == DBG.sw)
+step("debug hud", function() tool:client_onUpdate(0.016) end)
+check("hud open", tool.cl.stepGui:isActive() and tool.cl.stepGui.texts.stepTick:find("Tick 0", 1, true), tool.cl.stepGui.texts.stepTick)
+local function arrows()
+	local n = 0
+	for _, e in ipairs(tool.cl.lines) do if e.playing then n = n + 1 end end
+	return n
+end
+check("arrow from A", arrows() == 2, arrows())
+check("countdown labels", (function()
+	local t = {}
+	for _, e in ipairs(tool.cl.labelShown) do t[e.inter] = e.text end
+	return t[DBG.g1] == "#40ff601t" and t[DBG.out] == "#ffffff2t" and t[DBG.sw] == nil
+end)())
+step("debug xor memory label", function()
+	tool:cl_onDebug({ tick = 0, changed = {}, steady = {}, changedCount = 0, otherCount = 0, inputs = "1", outputs = "0",
+		settled = false, glitches = {}, mems = { { inter = DBG.g1, on = true } }, next = { { inter = DBG.g1, n = 2 } } })
+	tool:client_onUpdate(0.016)
+end)
+check("MEM label with countdown", (function()
+	for _, e in ipairs(tool.cl.labelShown) do
+		if e.inter == DBG.g1 then return e.text == "#d8b000MEM on #ffffff2t" end
+	end
+end)())
+step("debug step", function() tool:client_onEquippedUpdate(S.start, S.null, false) tool:client_onUpdate(0.016) end)
+check("tick 1 = g1", tool.cl.debug.view.tick == 1 and tool.cl.debug.view.changed[1].inter == DBG.g1 and tool.cl.debug.view.outputs == "0")
+check("g1 > out bright, sw > g1 faint", arrows() == 4 and #tool.cl.debugFrames == 1, arrows())
+step("debug step 2", function() tool:client_onEquippedUpdate(S.start, S.null, false) tool:client_onUpdate(0.016) end)
+check("tick 2: B on, no arrow out of B, the rest faint", tool.cl.debug.view.outputs == "1" and arrows() == 4, arrows())
+step("debug back", function() tool:client_onEquippedUpdate(S.null, S.start, false) end)
+check("back to tick 1", tool.cl.debug.view.tick == 1 and tool.cl.debug.view.outputs == "0")
+step("debug run", function()
+	tool:client_onToggle()
+	for _ = 1, 4 do tool:client_onUpdate(0.6) end
+end)
+check("run stops when settled", tool.cl.debug.view.settled and not tool.cl.debug.running and tool.cl.debug.view.tick == 3,
+	tostring(tool.cl.debug.view.tick))
+check("hud says settled", tool.cl.stepGui.texts.stepInfo:find("Settled", 1, true) and tool.cl.stepGui.texts.stepInfo:find("tick 2", 1, true),
+	tool.cl.stepGui.texts.stepInfo)
+step("debug unequip hides hud", function()
+	tool.tool.isEquipped = function() return false end
+	tool:client_onUpdate(0.016)
+	tool.tool.isEquipped = function() return true end
+end)
+check("hud closed when unequipped", not tool.cl.stepGui:isActive())
+step("debug stop (R)", function() tool:client_onUpdate(0.016) tool:client_onReload() end)
+check("debug stopped", tool.cl.debug == nil and tool.cl.gui:isActive() and not tool.cl.stepGui:isActive()
+	and tool.sv.debug[player.id] == nil and #tool.cl.debugFrames == 0)
+step("debug repeat mode", function()
+	tool:client_onReload()
+	press("debugHold") press("debugHold") -- Held > 1 tick pulse > Pulse every N
+	tool:cl_onDebugEveryChanged(nil, "x")
+	tool:cl_onDebugInputsChanged(nil, "1")
+	press("debugStart")
+end)
+check("repeat: bad N refused", tool.cl.debug == nil and tool.cl.gui.texts.debugInfo:find("whole number", 1, true))
+step("debug repeat start", function()
+	tool:cl_onDebugEveryChanged(nil, "2")
+	press("debugStart")
+	tool:client_onUpdate(0.016)
+	for _ = 1, 4 do tool:client_onEquippedUpdate(S.start, S.null, false) end
+end)
+check("repeat: sw pulses on even ticks", tool.cl.debug and tool.cl.debug.view.tick == 4 and tool.cl.debug.view.inputs == "1"
+	and tool.sv.debug[player.id].every == 2 and not tool.cl.debug.view.settled)
+step("debug repeat stop", function()
+	tool:client_onReload()
+	press("debugHold") press("debugHold") -- back to Held
+end)
+step("debug same inputs", function()
+	tool:cl_onDebugInputsChanged(nil, "0")
+	press("debugStart")
+	tool:client_onUpdate(0.016)
+end)
+check("same inputs: nothing changes", tool.cl.stepGui.texts.stepInfo:find("Nothing changes", 1, true), tool.cl.stepGui.texts.stepInfo)
+step("debug stop again", function() tool:client_onReload() tool.cl.gui:close() press("closeDebug") end)
 
 -- destroyed part is pruned
 step("prune", function()

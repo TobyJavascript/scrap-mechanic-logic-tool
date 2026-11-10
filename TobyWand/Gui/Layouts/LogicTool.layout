@@ -11,18 +11,23 @@
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.0300 0.0700 0.3053 0.0400" name="openScript">
+        <Widget type="Button" skin="PrimaryButton" position_real="0.0300 0.0700 0.2260 0.0400" name="openScript">
             <Property key="Caption" value="&lt; Script"/>
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.3473 0.0700 0.3053 0.0400" name="openSettings">
+        <Widget type="Button" skin="PrimaryButton" position_real="0.2680 0.0700 0.2260 0.0400" name="openSettings">
             <Property key="Caption" value="&lt; Settings"/>
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.6647 0.0700 0.3053 0.0400" name="openModule">
+        <Widget type="Button" skin="PrimaryButton" position_real="0.5060 0.0700 0.2260 0.0400" name="openModule">
             <Property key="Caption" value="&lt; Module"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.7440 0.0700 0.2260 0.0400" name="openDebug">
+            <Property key="Caption" value="&lt; Debug"/>
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>
@@ -114,48 +119,12 @@
             <Property key="TextAlign" value="Center"/>
         </Widget>
         <Widget type="TextBox" skin="TextBox" position_real="0.0300 0.4370 0.9400 0.0300">
-            <Property key="Caption" value="ANALYSE"/>
-            <Property key="TextAlign" value="Left VCenter"/>
-            <Property key="FontName" value="SM_HeaderTiny"/>
-            <Property key="TextColour" value="0.85 0.65 0.2"/>
-        </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.0300 0.4690 0.3053 0.0400" name="timing">
-            <Property key="Caption" value="Timing A &gt; B"/>
-            <Property key="FontName" value="SM_ButtonTiny"/>
-            <Property key="TextAlign" value="Center"/>
-        </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.3473 0.4690 0.3053 0.0400" name="truth">
-            <Property key="Caption" value="Truth table"/>
-            <Property key="FontName" value="SM_ButtonTiny"/>
-            <Property key="TextAlign" value="Center"/>
-        </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.6647 0.4690 0.3053 0.0400" name="lint">
-            <Property key="Caption" value="Check creation"/>
-            <Property key="FontName" value="SM_ButtonTiny"/>
-            <Property key="TextAlign" value="Center"/>
-        </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.0300 0.5170 0.3053 0.0400" name="probeFwd">
-            <Property key="Caption" value="Delays from A"/>
-            <Property key="FontName" value="SM_ButtonTiny"/>
-            <Property key="TextAlign" value="Center"/>
-        </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.3473 0.5170 0.3053 0.0400" name="probeBack">
-            <Property key="Caption" value="Delays to A"/>
-            <Property key="FontName" value="SM_ButtonTiny"/>
-            <Property key="TextAlign" value="Center"/>
-        </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.6647 0.5170 0.3053 0.0400" name="clearMarks">
-            <Property key="Caption" value="Clear marks"/>
-            <Property key="FontName" value="SM_ButtonTiny"/>
-            <Property key="TextAlign" value="Center"/>
-        </Widget>
-        <Widget type="TextBox" skin="TextBox" position_real="0.0300 0.5700 0.9400 0.0300">
             <Property key="Caption" value="RESULT"/>
             <Property key="TextAlign" value="Left VCenter"/>
             <Property key="FontName" value="SM_HeaderTiny"/>
             <Property key="TextColour" value="0.85 0.65 0.2"/>
         </Widget>
-        <Widget type="Widget" skin="SearchBarBackground" position_real="0.0300 0.6020 0.9400 0.3780">
+        <Widget type="Widget" skin="SearchBarBackground" position_real="0.0300 0.4690 0.9400 0.5110">
             <Widget type="EditBox" skin="EditBoxStretch" position_real="0.0100 0.0200 0.9800 0.9600" name="result">
                 <Property key="MultiLine" value="true"/>
                 <Property key="WordWrap" value="true"/>
@@ -447,6 +416,140 @@
                 <Property key="VisibleVScroll" value="true"/>
                 <Property key="Caption" value=""/>
                 <Property key="TabPrinting" value="true"/>
+            </Widget>
+        </Widget>
+    </Widget>
+    <Widget type="Widget" skin="HudBackgroundLarge" position_real="0.0200 0.0600 0.3600 0.8800" name="debugWindow">
+        <Property key="Visible" value="false"/>
+        <Widget type="TextBox" skin="TextBox" position_real="0.0300 0.0150 0.4000 0.0450">
+            <Property key="Caption" value="DEBUG"/>
+            <Property key="TextAlign" value="Left VCenter"/>
+            <Property key="FontName" value="SM_Button"/>
+        </Widget>
+        <Widget type="Button" skin="SecondaryButton" position_real="0.7700 0.0200 0.2000 0.0350" name="closeDebug">
+            <Property key="Caption" value="Hide"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="TextBox" skin="TextBox" position_real="0.0300 0.0700 0.9400 0.0300">
+            <Property key="Caption" value="ANALYSE   (results on the right)"/>
+            <Property key="TextAlign" value="Left VCenter"/>
+            <Property key="FontName" value="SM_HeaderTiny"/>
+            <Property key="TextColour" value="0.85 0.65 0.2"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.0300 0.1020 0.3053 0.0400" name="timing">
+            <Property key="Caption" value="Timing A &gt; B"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.3473 0.1020 0.3053 0.0400" name="truth">
+            <Property key="Caption" value="Truth table"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.6647 0.1020 0.3053 0.0400" name="lint">
+            <Property key="Caption" value="Check creation"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.0300 0.1500 0.3053 0.0400" name="probeFwd">
+            <Property key="Caption" value="Delays from A"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.3473 0.1500 0.3053 0.0400" name="probeBack">
+            <Property key="Caption" value="Delays to A"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.6647 0.1500 0.3053 0.0400" name="clearMarks">
+            <Property key="Caption" value="Clear marks"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="TextBox" skin="TextBox" position_real="0.0300 0.2080 0.9400 0.0300">
+            <Property key="Caption" value="STEP   A  &gt;  B, one tick at a time"/>
+            <Property key="TextAlign" value="Left VCenter"/>
+            <Property key="FontName" value="SM_HeaderTiny"/>
+            <Property key="TextColour" value="0.85 0.65 0.2"/>
+        </Widget>
+        <Widget type="TextBox" skin="TextBox" position_real="0.0300 0.2400 0.2700 0.0400">
+            <Property key="Caption" value="Inputs A"/>
+            <Property key="TextAlign" value="Left VCenter"/>
+            <Property key="FontName" value="SM_TextLabel"/>
+        </Widget>
+        <Widget type="Widget" skin="SearchBarBackground" position_real="0.3000 0.2400 0.3800 0.0400">
+            <Widget type="EditBox" skin="EditBoxStretch" position_real="0.0300 0.0500 0.9400 0.9000" name="debugInputs">
+                <Property key="MultiLine" value="false"/>
+                <Property key="TextAlign" value="Left VCenter"/>
+                <Property key="FontName" value="SM_TextLabel"/>
+                <Property key="TextColour" value="1 1 1"/>
+                <Property key="MaxTextLength" value="64"/>
+                <Property key="Caption" value=""/>
+            </Widget>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.7000 0.2400 0.2700 0.0400" name="debugFromGame">
+            <Property key="Caption" value="From game"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="TextBox" skin="TextBox" position_real="0.0300 0.2880 0.2700 0.0400">
+            <Property key="Caption" value="Run speed"/>
+            <Property key="TextAlign" value="Left VCenter"/>
+            <Property key="FontName" value="SM_TextLabel"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.3000 0.2880 0.6700 0.0400" name="debugSpeed">
+            <Property key="Caption" value="1 s per tick"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="TextBox" skin="TextBox" position_real="0.0300 0.3360 0.2700 0.0400">
+            <Property key="Caption" value="Input mode"/>
+            <Property key="TextAlign" value="Left VCenter"/>
+            <Property key="FontName" value="SM_TextLabel"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.3000 0.3360 0.6700 0.0400" name="debugHold">
+            <Property key="Caption" value="Held"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="TextBox" skin="TextBox" position_real="0.0300 0.3840 0.2700 0.0400">
+            <Property key="Caption" value="Pulse every"/>
+            <Property key="TextAlign" value="Left VCenter"/>
+            <Property key="FontName" value="SM_TextLabel"/>
+        </Widget>
+        <Widget type="Widget" skin="SearchBarBackground" position_real="0.3000 0.3840 0.2000 0.0400">
+            <Widget type="EditBox" skin="EditBoxStretch" position_real="0.0300 0.0500 0.9400 0.9000" name="debugEvery">
+                <Property key="MultiLine" value="false"/>
+                <Property key="TextAlign" value="Left VCenter"/>
+                <Property key="FontName" value="SM_TextLabel"/>
+                <Property key="TextColour" value="1 1 1"/>
+                <Property key="MaxTextLength" value="64"/>
+                <Property key="Caption" value=""/>
+            </Widget>
+        </Widget>
+        <Widget type="TextBox" skin="TextBox" position_real="0.5200 0.3840 0.4500 0.0400">
+            <Property key="Caption" value="ticks (Pulse every mode)"/>
+            <Property key="TextAlign" value="Left VCenter"/>
+            <Property key="FontName" value="SM_TextSmall"/>
+            <Property key="TextColour" value="0.7 0.7 0.7"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.0300 0.4320 0.9400 0.0400" name="debugStart">
+            <Property key="Caption" value="Start debug"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Widget" skin="SearchBarBackground" position_real="0.0300 0.4850 0.9400 0.4950">
+            <Widget type="EditBox" skin="EditBoxStretch" position_real="0.0100 0.0200 0.9800 0.9600" name="debugInfo">
+                <Property key="MultiLine" value="true"/>
+                <Property key="WordWrap" value="true"/>
+                <Property key="TextAlign" value="Left Top"/>
+                <Property key="FontName" value="SM_TextSmall"/>
+                <Property key="TextColour" value="1 1 1"/>
+                <Property key="MaxTextLength" value="100000"/>
+                <Property key="VisibleVScroll" value="true"/>
+                <Property key="Caption" value=""/>
+                <Property key="ReadOnly" value="true"/>
             </Widget>
         </Widget>
     </Widget>
