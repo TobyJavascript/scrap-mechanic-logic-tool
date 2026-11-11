@@ -62,9 +62,11 @@ local COLOR_RISE = sm.color.new("40ff60ff") -- step debugger: turned on this tic
 local COLOR_FALL = sm.color.new("ff4040ff") -- step debugger: turned off this tick
 
 local RANGE = 10
--- Frames are the part's size plus a padding (m) on every side. Each group
--- has its own padding so a part in several groups shows nested frames.
-local GROUP_PAD = { A = 0.015, B = 0.03, C = 0.045 }
+-- Frames are the part's size plus a padding (m) on every side (FRAME_PADS).
+-- Frames are nested only where needed: a part's first group (A, B, C
+-- order) gets the tightest frame, its second one the next size, and so on.
+-- A part only in B or only in C gets the tight one.
+local FRAME_PADS = { 0.015, 0.03, 0.045 }
 local FLAG_PAD = 0.06
 local LINE_THICK = 0.02       -- wire diameter (m)
 local ARROW_LEN = 0.11        -- arrowhead length (m)
@@ -1382,15 +1384,33 @@ function LogicTool:cl_addMarker(g, inter)
 	local e = sm.effect.createEffect("ShapeRenderable", inter)
 	e:setParameter("uuid", FRAME_UUID)
 	e:setParameter("color", GROUP_COLOR[g])
-	e:setScale(frameScale(inter:getShape(), GROUP_PAD[g]))
 	if self.tool:isEquipped() then e:start() end
 	markers[inter.id] = e
+	self:cl_fitMarkers(inter.id)
 end
 
 function LogicTool:cl_removeMarker(g, interId)
 	local e = self.cl.markers[g][interId]
 	if e and sm.exists(e) then e:destroy() end
 	self.cl.markers[g][interId] = nil
+	self:cl_fitMarkers(interId)
+end
+
+-- Sizes the frames of one part: its groups in A, B, C order get the frames
+-- from tightest to widest.
+function LogicTool:cl_fitMarkers(interId)
+	local k = 0
+	for _, g in ipairs(GROUPS) do
+		local e = self.cl.markers[g][interId]
+		if e and sm.exists(e) then
+			k = k + 1
+			local shape
+			for _, entry in ipairs(self.cl.groups[g]) do
+				if entry.id == interId then shape = entry.shape break end
+			end
+			e:setScale(frameScale(shape, FRAME_PADS[k]))
+		end
+	end
 end
 
 function LogicTool:cl_add(g, inter, shape)
@@ -1417,10 +1437,14 @@ end
 
 function LogicTool:cl_clearGroup(g)
 	self.cl.groups[g] = {}
+	local ids = {}
 	for id, e in pairs(self.cl.markers[g]) do
 		if sm.exists(e) then e:destroy() end
+		ids[#ids + 1] = id
 	end
 	self.cl.markers[g] = {}
+	-- the same parts in the other groups may now get a tighter frame
+	for _, id in ipairs(ids) do self:cl_fitMarkers(id) end
 end
 
 -- Drop parts that were destroyed.

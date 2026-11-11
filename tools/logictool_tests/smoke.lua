@@ -160,6 +160,7 @@ Effect.__index = Effect
 for _, m in ipairs({ "setParameter", "setPosition", "setRotation", "setScale", "setOffsetPosition" }) do
 	Effect[m] = function(self, ...) assert(not self.destroyed, "use of destroyed effect: " .. m) end
 end
+function Effect:setScale(v) assert(not self.destroyed, "use of destroyed effect: setScale") self.scale = v end
 function Effect:start() assert(not self.destroyed) self.playing = true end
 function Effect:stop() self.playing = false end
 function Effect:isPlaying() return self.playing end
@@ -403,6 +404,16 @@ step("right click", rightClick)
 check("active B", tool.cl.active == "B")
 step("select similar", function() click(gates[1], true) end)
 check("B has 4 gates", #tool.cl.groups.B == 4, #tool.cl.groups.B)
+local function frameSize(g, inter)
+	local e = tool.cl.markers[g][inter.id]
+	return e and e.scale and string.format("%.3f", e.scale.x) or "none"
+end
+check("frames: B alone is tight", frameSize("B", gates[2]) == "0.280", frameSize("B", gates[2]))
+step("frames: gate2 into A too", function() tool:cl_add("A", gates[2], gates[2].shape) end)
+check("frames: A tight, B hugs it", frameSize("A", gates[2]) == "0.280" and frameSize("B", gates[2]) == "0.310",
+	frameSize("A", gates[2]) .. " " .. frameSize("B", gates[2]))
+step("frames: gate2 out of A again", function() tool:cl_toggle("A", gates[2], gates[2].shape) end)
+check("frames: B tight again", frameSize("B", gates[2]) == "0.280" and frameSize("A", gates[2]) == "none", frameSize("B", gates[2]))
 
 -- box select into C
 step("to C", rightClick)
