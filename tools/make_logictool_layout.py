@@ -139,7 +139,7 @@ def main_layout():
     sk.append(text(PAD, y, 0.4, 0.045, "SCRIPT", font="SM_Button"))
     sk.append(button(1 - PAD - 0.2, y + 0.005, 0.2, 0.035, "Hide", "closeScript", skin=CLOSE_SKIN))
     y += 0.055
-    row = button_row(y, [("help", "Help"), ("example", "Example"), ("format", "Format"), ("run", "Run")])
+    row = button_row(y, [("help", "Help"), ("format", "Format"), ("run", "Run")])
     # this game style has no text of its own; like the game's dressbot menu,
     # put a text box on top that lets clicks through to the button
     run = row[-1]
@@ -150,6 +150,13 @@ def main_layout():
         ("TextColour", "1 1 1"), ("NeedMouse", "false"), ("NeedKey", "false"),
     ]))
     sk += row
+    y += ROW_H + GAP
+    # the script library: < name > Save Delete (saved scripts, then the examples)
+    sk.append(button(PAD, y, 0.08, ROW_H, "<", "libPrev"))
+    sk.append(line_edit(PAD + 0.09, y, 0.38, ROW_H, "scriptName"))
+    sk.append(button(PAD + 0.48, y, 0.08, ROW_H, ">", "libNext"))
+    sk.append(button(PAD + 0.57, y, 0.18, ROW_H, "Save", "libSave"))
+    sk.append(button(PAD + 0.76, y, 1 - 2 * PAD - 0.76, ROW_H, "Delete", "libDelete"))
     y += ROW_H + GAP + 0.005
     sk.append(edit_box(PAD, y, 1 - 2 * PAD, 1 - y - 0.02, "script"))
     script = W("Widget", "HudBackgroundLarge", 0.02, 0.06, 0.36, 0.88, "scriptWindow",

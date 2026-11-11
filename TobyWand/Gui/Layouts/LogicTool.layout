@@ -150,22 +150,17 @@
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.0300 0.0700 0.2260 0.0400" name="help">
+        <Widget type="Button" skin="PrimaryButton" position_real="0.0300 0.0700 0.3053 0.0400" name="help">
             <Property key="Caption" value="Help"/>
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.2680 0.0700 0.2260 0.0400" name="example">
-            <Property key="Caption" value="Example"/>
-            <Property key="FontName" value="SM_ButtonTiny"/>
-            <Property key="TextAlign" value="Center"/>
-        </Widget>
-        <Widget type="Button" skin="PrimaryButton" position_real="0.5060 0.0700 0.2260 0.0400" name="format">
+        <Widget type="Button" skin="PrimaryButton" position_real="0.3473 0.0700 0.3053 0.0400" name="format">
             <Property key="Caption" value="Format"/>
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>
-        <Widget type="Button" skin="SchematicbotButtonGreen" position_real="0.7440 0.0700 0.2260 0.0400" name="run">
+        <Widget type="Button" skin="SchematicbotButtonGreen" position_real="0.6647 0.0700 0.3053 0.0400" name="run">
             <Widget type="TextBox" skin="TextBox" position_real="0.0000 0.0000 1.0000 1.0000">
                 <Property key="Caption" value="Run"/>
                 <Property key="FontName" value="SM_ButtonTiny"/>
@@ -175,7 +170,37 @@
                 <Property key="NeedKey" value="false"/>
             </Widget>
         </Widget>
-        <Widget type="Widget" skin="SearchBarBackground" position_real="0.0300 0.1230 0.9400 0.8570">
+        <Widget type="Button" skin="PrimaryButton" position_real="0.0300 0.1180 0.0800 0.0400" name="libPrev">
+            <Property key="Caption" value="&lt;"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Widget" skin="SearchBarBackground" position_real="0.1200 0.1180 0.3800 0.0400">
+            <Widget type="EditBox" skin="EditBoxStretch" position_real="0.0300 0.0500 0.9400 0.9000" name="scriptName">
+                <Property key="MultiLine" value="false"/>
+                <Property key="TextAlign" value="Left VCenter"/>
+                <Property key="FontName" value="SM_TextLabel"/>
+                <Property key="TextColour" value="1 1 1"/>
+                <Property key="MaxTextLength" value="64"/>
+                <Property key="Caption" value=""/>
+            </Widget>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.5100 0.1180 0.0800 0.0400" name="libNext">
+            <Property key="Caption" value="&gt;"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.6000 0.1180 0.1800 0.0400" name="libSave">
+            <Property key="Caption" value="Save"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.7900 0.1180 0.1800 0.0400" name="libDelete">
+            <Property key="Caption" value="Delete"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Widget" skin="SearchBarBackground" position_real="0.0300 0.1710 0.9400 0.8090">
             <Widget type="EditBox" skin="EditBoxStretch" position_real="0.0100 0.0200 0.9800 0.9600" name="script">
                 <Property key="MultiLine" value="true"/>
                 <Property key="WordWrap" value="true"/>

@@ -16,6 +16,7 @@ dofile("$GAME_DATA/Scripts/game/AnimationUtil.lua")
 dofile("$CONTENT_DATA/Scripts/LogicScript.lua")
 dofile("$CONTENT_DATA/Scripts/LogicGraph.lua")
 dofile("$CONTENT_DATA/Scripts/LogicModule.lua")
+dofile("$CONTENT_DATA/Scripts/LogicSettings.lua")
 
 LogicTool = class()
 
@@ -1173,7 +1174,12 @@ function LogicTool:client_onCreate()
 		labelShown = {},                       -- entries picked for labels
 		labelTimer = 0,
 		typeAge = 0,                           -- seconds since type labels were last asked for
-		exampleIndex = 0,
+		libPos = nil,                          -- index in the script library (< >) of the loaded script
+		libLoaded = nil,                       -- the code as it was loaded/saved (to spot unsaved edits)
+		library = {},                          -- saved scripts { name =, code = }
+		scriptNameText = "",                   -- the library name box
+		confirm = nil,                         -- an action waiting for a second press ("libNext", "libDelete" ...)
+		saveIn = nil,                          -- seconds until the settings are saved (nil = nothing to save)
 		script = "",
 		leftWindow = nil,                      -- "script", "settings" or "module": the window shown on the left
 		module = nil,                          -- the last loaded module (LogicModule table)
@@ -1206,7 +1212,7 @@ function LogicTool:client_onCreate()
 	local gui = sm.gui.createGuiFromLayout("$CONTENT_DATA/Gui/Layouts/LogicTool.layout", false)
 	for _, name in ipairs({ "close", "active", "clearActive", "clearAll", "undo", "sortX", "sortY", "sortZ", "reverse",
 		"allToAll", "zip", "chain", "wireMode", "clearOut", "clearIn", "timing", "truth", "lint", "lines", "labels",
-		"clearMarks", "example", "run", "help", "pickBy", "probeFwd", "probeBack", "openScript", "closeScript", "openSettings", "closeSettings", "openModule", "closeModule", "loadModule", "resetModule", "lutCompress", "lutEven", "lutStyle", "buildLut", "cancelLut", "undoLut", "boxMode", "format",
+		"clearMarks", "libPrev", "libNext", "libSave", "libDelete", "run", "help", "pickBy", "probeFwd", "probeBack", "openScript", "closeScript", "openSettings", "closeSettings", "openModule", "closeModule", "loadModule", "resetModule", "lutCompress", "lutEven", "lutStyle", "buildLut", "cancelLut", "undoLut", "boxMode", "format",
 		"openDebug", "closeDebug", "debugFromGame", "debugSpeed", "debugHold", "debugStart" }) do
 		gui:setButtonCallback(name, "cl_onButton")
 	end
@@ -1214,6 +1220,7 @@ function LogicTool:client_onCreate()
 	gui:setTextChangedCallback("moduleTable", "cl_onModuleTableChanged")
 	gui:setTextChangedCallback("debugInputs", "cl_onDebugInputsChanged")
 	gui:setTextChangedCallback("debugEvery", "cl_onDebugEveryChanged")
+	gui:setTextChangedCallback("scriptName", "cl_onScriptNameChanged")
 	gui:setText("debugEvery", self.cl.debugEveryText)
 	gui:setText("debugInfo", DEBUG_HINT)
 	self.cl.gui = gui
@@ -1223,6 +1230,10 @@ function LogicTool:client_onCreate()
 		{ isHud = true, isInteractive = false, needsCursor = false })
 
 	self.cl.script = LogicScript.examples[1].code
+	self:cl_loadSaved()
+	gui:setText("scriptName", self.cl.scriptNameText)
+	gui:setText("debugInputs", self.cl.debugInputText)
+	gui:setText("debugEvery", self.cl.debugEveryText)
 	self:cl_showScript()
 	self:cl_showModuleInfo()
 	self:cl_refreshGui()
@@ -1240,6 +1251,7 @@ function LogicTool:client_onDestroy()
 	for _, lab in ipairs(self.cl.labels) do
 		pcall(lab.destroy, lab)
 	end
+	if self.cl.saveIn then self:cl_saveSettings() end
 	if self.cl.gui then pcall(self.cl.gui.destroy, self.cl.gui) end
 	if self.cl.stepGui then pcall(self.cl.stepGui.destroy, self.cl.stepGui) end
 end
@@ -1771,6 +1783,7 @@ end
 
 -- Q: next box select mode (also while dragging, like the game's block drag)
 function LogicTool:client_onToggle()
+	self:cl_markDirty(1)
 	if self.cl.debug then
 		local d = self.cl.debug
 		d.running = not d.running
@@ -1984,6 +1997,7 @@ function LogicTool:cl_showScript(errorLine)
 end
 
 function LogicTool:cl_onScriptChanged(_, text)
+	self:cl_markDirty(2)
 	local src = LogicScript.editorToSource(text)
 	local old = self.cl.script or ""
 	self.cl.script = src
@@ -1998,6 +2012,157 @@ function LogicTool:cl_formatScript()
 	self.cl.script = LogicScript.format(self.cl.script or "")
 	self:cl_showScript()
 	self:cl_setResult("Formatted.")
+end
+
+---------------------------------------------------------------------------
+-- CLIENT: saved settings and the script library (files in the mod folder,
+-- like Bingo's editor; see LogicSettings.lua)
+---------------------------------------------------------------------------
+
+local SETTINGS_PATH = "$CONTENT_DATA/settings.json"
+local SCRIPTS_PATH = "$CONTENT_DATA/scripts.json"
+local SETTINGS_SPEC = {
+	enums = {
+		boxMode = BOX_MODES, pickMode = PICK_MODES, labelMode = LABEL_MODES, wireMode = WIRE_MODES,
+		lutStyle = LUT_STYLES, debugSpeed = DEBUG_SPEEDS, debugInputMode = DEBUG_INPUT_MODES,
+	},
+	bools = { "showLines", "lutCompress", "lutEven" },
+	texts = { debugEveryText = 16, debugInputText = 64, scriptNameText = LogicSettings.NAME_MAX, script = 100000 },
+}
+
+local function readJson(path)
+	local ok, data = pcall(function()
+		if sm.json.fileExists(path) then return sm.json.open(path) end
+	end)
+	if ok then return data end
+	return nil, data
+end
+
+function LogicTool:cl_loadSaved()
+	local settings, err = readJson(SETTINGS_PATH)
+	if err then chat("#ffcc40TobyWand: couldn't read the saved settings, using defaults (" .. tostring(err) .. ")") end
+	if settings then LogicSettings.unpack(settings, SETTINGS_SPEC, self.cl) end
+	local scripts = readJson(SCRIPTS_PATH)
+	self.cl.library = LogicSettings.readScripts(scripts)
+	-- the script as it was left; if it is a saved one, point < > at it
+	local entries = LogicSettings.entries(self.cl.library, LogicScript.examples)
+	for i, e in ipairs(entries) do
+		if e.code == self.cl.script then
+			self.cl.libPos = i
+			self.cl.libLoaded = e.code
+			break
+		end
+	end
+	if not self.cl.libPos then self.cl.libLoaded = settings and settings.script or nil end
+end
+
+-- Settings are saved a moment after the last change (typing in the script
+-- would otherwise write the file on every key).
+function LogicTool:cl_markDirty(seconds)
+	if not self.cl.saveIn or self.cl.saveIn > seconds then self.cl.saveIn = seconds end
+end
+
+local function writeJson(data, path)
+	return pcall(sm.json.save, data, path)
+end
+
+function LogicTool:cl_saveSettings()
+	self.cl.saveIn = nil
+	local ok, err = writeJson(LogicSettings.pack(self.cl, SETTINGS_SPEC), SETTINGS_PATH)
+	if not ok and not self.cl.saveFailed then
+		self.cl.saveFailed = true
+		chat("#ffcc40TobyWand: couldn't save the settings (" .. tostring(err) .. ")")
+	end
+end
+
+function LogicTool:cl_onScriptNameChanged(_, text)
+	self.cl.scriptNameText = text
+	self:cl_markDirty(2)
+end
+
+function LogicTool:cl_libEntries()
+	return LogicSettings.entries(self.cl.library, LogicScript.examples)
+end
+
+-- The script was changed since it was loaded or saved.
+function LogicTool:cl_scriptEdited()
+	return (self.cl.script or "") ~= (self.cl.libLoaded or "") and (self.cl.script or "") ~= ""
+end
+
+-- Asks for a second press before an action that loses something.
+function LogicTool:cl_confirmed(action, warning)
+	if self.cl.confirm == action then
+		self.cl.confirm = nil
+		return true
+	end
+	self.cl.confirm = action
+	self:cl_setResult("#ffcc40" .. warning .. "#ffffff")
+	sm.gui.displayAlertText(warning, 2.5)
+	return false
+end
+
+function LogicTool:cl_libStep(dir, action)
+	local entries = self:cl_libEntries()
+	if #entries == 0 then return end
+	if self:cl_scriptEdited() and not self:cl_confirmed(action, "Unsaved changes in the script: press again to load another anyway") then
+		return
+	end
+	local pos = self.cl.libPos
+	if not pos then
+		pos = dir > 0 and 1 or #entries
+	else
+		pos = (pos - 1 + dir) % #entries + 1
+	end
+	local e = entries[pos]
+	self.cl.libPos = pos
+	self.cl.script = e.code
+	self.cl.libLoaded = e.code
+	self.cl.scriptNameText = e.name
+	self.cl.gui:setText("scriptName", e.name)
+	self:cl_showScript()
+	self:cl_setResult(string.format("Script %d/%d: %s%s", pos, #entries, e.name,
+		e.example and "  (example: Save keeps your own copy)" or ""))
+end
+
+function LogicTool:cl_saveScripts()
+	local ok, err = writeJson(LogicSettings.packScripts(self.cl.library), SCRIPTS_PATH)
+	if not ok then
+		self:cl_setResult("#ff6060Couldn't save the script library: " .. tostring(err) .. "#ffffff")
+	end
+	return ok
+end
+
+function LogicTool:cl_libSave()
+	local code = self.cl.script or ""
+	local name, replaced = LogicSettings.saveScript(self.cl.library, self.cl.scriptNameText, code)
+	if not name then
+		self:cl_setResult("#ff6060" .. replaced .. "#ffffff")
+		sm.gui.displayAlertText(replaced, 2)
+		return
+	end
+	if not self:cl_saveScripts() then return end
+	self.cl.libLoaded = code
+	self.cl.libPos = LogicSettings.indexOf(self.cl.library, name)
+	self.cl.scriptNameText = name
+	self.cl.gui:setText("scriptName", name)
+	self:cl_setResult((replaced and "Saved over " or "Saved as ") .. name)
+	sm.gui.displayAlertText((replaced and "Saved over " or "Saved as ") .. name, 1.5)
+end
+
+function LogicTool:cl_libDelete()
+	local name = self.cl.scriptNameText or ""
+	if not LogicSettings.indexOf(self.cl.library, (name:gsub("^%s+", ""):gsub("%s+$", ""))) then
+		self:cl_setResult("No saved script is called that (examples can't be deleted).")
+		return
+	end
+	if not self:cl_confirmed("libDelete", "Press Delete again to delete " .. name) then return end
+	LogicSettings.deleteScript(self.cl.library, name)
+	if self:cl_saveScripts() then
+		-- the script stays in the editor, now unsaved
+		self.cl.libPos = nil
+		self.cl.libLoaded = nil
+		self:cl_setResult("Deleted " .. name .. ". It is still in the editor until you load another.")
+	end
 end
 
 ---------------------------------------------------------------------------
@@ -2595,6 +2760,8 @@ function LogicTool:cl_refreshGui()
 end
 
 function LogicTool:cl_onButton(name)
+	if self.cl.confirm and self.cl.confirm ~= name then self.cl.confirm = nil end
+	self:cl_markDirty(1)
 	if name == "close" then
 		self.cl.gui:close()
 	elseif name == "active" then
@@ -2648,13 +2815,12 @@ function LogicTool:cl_onButton(name)
 	elseif name == "clearMarks" then
 		self:cl_clearMarks()
 		self:cl_setResult("")
-	elseif name == "example" then
-		local n = #LogicScript.examples
-		self.cl.exampleIndex = self.cl.exampleIndex % n + 1
-		local ex = LogicScript.examples[self.cl.exampleIndex]
-		self.cl.script = ex.code
-		self:cl_showScript()
-		self:cl_setResult("Example " .. self.cl.exampleIndex .. "/" .. n .. ": " .. ex.name)
+	elseif name == "libPrev" or name == "libNext" then
+		self:cl_libStep(name == "libNext" and 1 or -1, name)
+	elseif name == "libSave" then
+		self:cl_libSave()
+	elseif name == "libDelete" then
+		self:cl_libDelete()
 	elseif name == "run" then
 		self:cl_runScript()
 	elseif name == "format" then
@@ -2744,10 +2910,12 @@ end
 
 function LogicTool:cl_onDebugInputsChanged(_, text)
 	self.cl.debugInputText = text
+	self:cl_markDirty(2)
 end
 
 function LogicTool:cl_onDebugEveryChanged(_, text)
 	self.cl.debugEveryText = text
+	self:cl_markDirty(2)
 end
 
 function LogicTool:cl_setDebugInfo(text)
@@ -3215,6 +3383,10 @@ function LogicTool:client_onUpdate(dt)
 	self:cl_updateAnimations(dt)
 	if not self.tool:isLocal() then return end
 	self:cl_updateVerify(dt)
+	if self.cl.saveIn then
+		self.cl.saveIn = self.cl.saveIn - dt
+		if self.cl.saveIn <= 0 then self:cl_saveSettings() end
+	end
 
 	-- safety net: whatever happened in the equip callbacks, world visuals
 	-- only show while the tool is in hand

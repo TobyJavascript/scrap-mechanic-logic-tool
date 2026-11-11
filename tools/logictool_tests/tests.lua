@@ -1068,5 +1068,41 @@ do
 	check("debug: same inputs = settled at once", #same.changes[0] == 0 and LogicGraph.debugSettled(same))
 end
 
+---------------------------------------------------------------------------
+-- Saved settings and the script library
+---------------------------------------------------------------------------
+
+do
+	local spec = { enums = { mode = { "a", "b", "c" }, speed = { 0.5, 1, 2 } }, bools = { "on" }, texts = { name = 5 } }
+	local packed = LogicSettings.pack({ mode = 2, speed = 3, on = true, name = "hey" }, spec)
+	check("settings pack", packed.mode == "b" and packed.speed == 2 and packed.on == true and packed.name == "hey" and packed.version == 1)
+	local state = { mode = 1, speed = 1, on = false, name = "x" }
+	local skipped = LogicSettings.unpack({ mode = "c", speed = 7, on = "yes", name = "too long" }, spec, state)
+	check("settings unpack keeps defaults for bad values", state.mode == 3 and state.speed == 1 and state.on == false
+		and state.name == "x" and skipped == 3)
+	check("settings unpack of junk", LogicSettings.unpack("junk", spec, state) == 0 and state.mode == 3)
+	check("settings pack skips a too long text", LogicSettings.pack({ name = "toolong" }, spec).name == nil)
+end
+
+do
+	local list = LogicSettings.readScripts({ scripts = {
+		{ name = "b", code = "2" }, { name = " a ", code = "1" }, { name = "B", code = "dup" }, { name = "", code = "x" },
+		{ name = 5, code = "x" }, "junk",
+	} })
+	check("scripts read: cleaned, sorted, no duplicates", #list == 2 and list[1].name == "a" and list[2].name == "b" and list[2].code == "2")
+	check("scripts read of junk", #LogicSettings.readScripts(nil) == 0 and #LogicSettings.readScripts({ scripts = "x" }) == 0)
+	local name, replaced = LogicSettings.saveScript(list, "  C ", "3")
+	check("script save new", name == "C" and replaced == false and #list == 3 and list[3].name == "C")
+	name, replaced = LogicSettings.saveScript(list, "c", "33")
+	check("script save over ignores case", name == "c" and replaced == true and #list == 3 and list[3].code == "33")
+	check("script save needs a name", LogicSettings.saveScript(list, "   ", "x") == nil)
+	check("script save name length", LogicSettings.saveScript(list, string.rep("x", 41), "x") == nil)
+	check("script delete", LogicSettings.deleteScript(list, "A") and #list == 2 and not LogicSettings.deleteScript(list, "zzz"))
+	local entries = LogicSettings.entries(list, { { name = "Ex", code = "e" } })
+	check("entries: saved then examples", #entries == 3 and entries[3].example and not entries[1].example)
+	local packed = LogicSettings.packScripts(list)
+	check("scripts pack", packed.version == 1 and #packed.scripts == 2 and packed.scripts[1].name == "b")
+end
+
 print(string.format("%d passed, %d failed", passed, failures))
 return failures

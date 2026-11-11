@@ -188,6 +188,15 @@ local function newGui() return setmetatable({ buttons = {}, textCbs = {}, texts 
 
 local raycast = { hit = false }
 JSON_STORE, IMPORTS = {}, {}
+FILES = {}
+NEW_TOOL = nil
+function BOX_NAME_OF(i) return ({ "3d", "xy", "xz", "yz" })[i] end
+function JSON_COPY(v)
+	if type(v) ~= "table" then return v end
+	local o = {}
+	for k, x in pairs(v) do o[k] = JSON_COPY(x) end
+	return o
+end
 LIFT, PLACED = nil, {}
 CAM = { pos = vec(0, -2, 0), dir = vec(0, 1, 0) }
 
@@ -274,7 +283,18 @@ sm = {
 			return { nb }
 		end,
 	},
-	json = { save = function(t, path) assert(type(t) == "table" and path:find("$CONTENT_DATA", 1, true)) end, writeJsonString = function(t)
+	json = {
+		save = function(t, path)
+			assert(type(t) == "table" and path:find("$CONTENT_DATA", 1, true))
+			if FILES.readOnly then error("Failed to write file") end
+			FILES[path] = JSON_COPY(t)
+		end,
+		open = function(path)
+			if FILES[path] == "broken" then error("Failed to parse json") end
+			return JSON_COPY(FILES[path])
+		end,
+		fileExists = function(path) return FILES[path] ~= nil end,
+		writeJsonString = function(t)
 		-- deep copy, so later edits to `t` don't leak into the "string"
 		local function copy(v)
 			if type(v) ~= "table" then return v end
@@ -318,7 +338,7 @@ dofile("$CONTENT_DATA/Scripts/LogicTool.lua")
 
 -- no accidental globals from here on
 local allowed = { CAM = true, LogicTool = true, LogicScript = true, LogicGraph = true, LogicModule = true, SERVER = true, clamp = true,
-	JSON_STORE = true, IMPORTS = true, DBG = true, LIFT = true, PLACED = true }
+	JSON_STORE = true, IMPORTS = true, DBG = true, LIFT = true, PLACED = true, FILES = true, JSON_COPY = true, NEW_TOOL = true, BOX_NAME_OF = true }
 setmetatable(_G, {
 	__newindex = function(t, k, v)
 		if not allowed[k] then error("global write: " .. tostring(k), 2) end
@@ -550,7 +570,60 @@ step("hide settings button", function() press("openSettings") press("closeSettin
 check("all left windows hidden", not tool.cl.gui.visible.scriptWindow and not tool.cl.gui.visible.settingsWindow)
 check("setting captions are values", tool.cl.gui.texts.boxMode == "3D box" and tool.cl.gui.texts.lines ~= nil
 	and not tool.cl.gui.texts.labels:find("Labels", 1, true), tool.cl.gui.texts.labels)
-step("examples/help", function() for _ = 1, 6 do press("example") end press("help") end)
+step("examples/help", function()
+	tool.cl.libLoaded = tool.cl.script -- nothing unsaved
+	for _ = 1, 6 do press("libNext") end
+	press("help")
+end)
+check("library steps through the examples", tool.cl.libPos ~= nil and tool.cl.scriptNameText == LogicScript.examples[tool.cl.libPos].name,
+	tostring(tool.cl.libPos) .. " " .. tostring(tool.cl.scriptNameText))
+
+-- script library: save, load, unsaved-change guard, delete
+step("library: save as", function()
+	tool:cl_onScriptChanged("script", "connect(A, B)")
+	tool:cl_onScriptNameChanged("scriptName", "  my zip ")
+	press("libSave")
+end)
+check("library: saved", #tool.cl.library == 1 and tool.cl.library[1].name == "my zip" and FILES["$CONTENT_DATA/scripts.json"]
+	and FILES["$CONTENT_DATA/scripts.json"].scripts[1].code == "connect(A, B)", result())
+step("library: edit, then next asks first", function()
+	tool:cl_onScriptChanged("script", "connect(A, B)\nprint(1)")
+	press("libNext")
+end)
+check("library: unsaved edit guarded", tool.cl.script == "connect(A, B)\nprint(1)" and result():find("Unsaved", 1, true), result())
+step("library: press again loads", function() press("libNext") end)
+check("library: next is the first example", tool.cl.script == LogicScript.examples[1].code and tool.cl.libPos == 2)
+step("library: back to my zip", function() press("libPrev") end)
+check("library: loaded my zip", tool.cl.script == "connect(A, B)" and tool.cl.gui.texts.scriptName == "my zip")
+step("library: save over (other case)", function()
+	tool:cl_onScriptChanged("script", "connect(A, B, \"zip\")")
+	tool:cl_onScriptNameChanged("scriptName", "My Zip")
+	press("libSave")
+end)
+check("library: saved over, one entry", #tool.cl.library == 1 and tool.cl.library[1].code == 'connect(A, B, "zip")'
+	and result():find("Saved over", 1, true), result())
+step("library: empty name refused", function()
+	tool:cl_onScriptNameChanged("scriptName", "  ")
+	press("libSave")
+end)
+check("library: empty name", #tool.cl.library == 1 and result():find("name", 1, true), result())
+step("library: delete needs two presses", function()
+	tool:cl_onScriptNameChanged("scriptName", "my zip")
+	press("libDelete")
+end)
+check("library: not deleted yet", #tool.cl.library == 1 and result():find("again", 1, true))
+step("library: delete", function() press("libDelete") end)
+check("library: deleted", #tool.cl.library == 0 and #FILES["$CONTENT_DATA/scripts.json"].scripts == 0)
+step("library: examples can't be deleted", function()
+	tool:cl_onScriptNameChanged("scriptName", LogicScript.examples[1].name)
+	press("libDelete")
+end)
+check("library: example kept", result():find("examples can", 1, true), result())
+step("library: keep one for the reload test", function()
+	tool:cl_onScriptChanged("script", "chain(A)")
+	tool:cl_onScriptNameChanged("scriptName", "chainer")
+	press("libSave")
+end)
 
 -- analysis: A switches -> C light
 step("set B = light for timing", function()
@@ -932,6 +1005,59 @@ step("debug same inputs", function()
 end)
 check("same inputs: nothing changes", tool.cl.stepGui.texts.stepInfo:find("Nothing changes", 1, true), tool.cl.stepGui.texts.stepInfo)
 step("debug stop again", function() tool:client_onReload() tool.cl.gui:close() press("closeDebug") end)
+
+-- settings are saved a moment after a change, and come back in a new session
+step("settings: change some", function()
+	press("lutCompress")             -- Stacked
+	press("debugSpeed")              -- 2 s
+	press("labels")                  -- Order > Type
+	tool:client_onToggle()           -- box mode XY ... (next)
+	tool:cl_onDebugInputsChanged(nil, "101")
+end)
+local boxWas = tool.cl.boxMode
+check("settings: not saved at once", (FILES["$CONTENT_DATA/settings.json"] or {}).lutCompress ~= true)
+step("settings: a moment later", function()
+	tool:client_onUpdate(1.0)
+	tool:client_onUpdate(1.1)
+end)
+local saved = FILES["$CONTENT_DATA/settings.json"]
+check("settings: saved", saved and saved.lutCompress == true and saved.debugSpeed == 2 and saved.labelMode == "type"
+	and saved.boxMode == BOX_NAME_OF(boxWas) and saved.debugInputText == "101" and saved.script == "chain(A)" and saved.version == 1)
+step("settings: new session", function()
+	local t2 = setmetatable({}, { __index = LogicTool })
+	t2.tool = tool.tool
+	t2.network = tool.network
+	t2:client_onCreate()
+	NEW_TOOL = t2
+end)
+check("settings: restored", NEW_TOOL and NEW_TOOL.cl.lutCompress == true and NEW_TOOL.cl.debugSpeed == 5
+	and NEW_TOOL.cl.boxMode == boxWas and NEW_TOOL.cl.debugInputText == "101" and NEW_TOOL.cl.gui.texts.debugInputs == "101"
+	and NEW_TOOL.cl.script == "chain(A)" and #NEW_TOOL.cl.library == 1 and NEW_TOOL.cl.libPos == 1
+	and NEW_TOOL.cl.gui.texts.lutCompress == "Stacked")
+step("settings: a broken file falls back to defaults", function()
+	FILES["$CONTENT_DATA/settings.json"] = "broken"
+	local t3 = setmetatable({}, { __index = LogicTool })
+	t3.tool = tool.tool
+	t3.network = tool.network
+	t3:client_onCreate()
+	NEW_TOOL = t3
+end)
+check("settings: defaults after a broken file", NEW_TOOL.cl.lutCompress == false and NEW_TOOL.cl.debugSpeed == 4
+	and chats[#chats]:find("using defaults", 1, true), chats[#chats])
+step("settings: read-only folder warns once", function()
+	FILES.readOnly = true
+	NEW_TOOL:cl_markDirty(0.1)
+	NEW_TOOL:client_onUpdate(0.2)
+	NEW_TOOL:cl_markDirty(0.1)
+	NEW_TOOL:client_onUpdate(0.2)
+	FILES.readOnly = nil
+end)
+check("settings: one warning", (function()
+	local n = 0
+	for _, c in ipairs(chats) do if c:find("couldn't save the settings", 1, true) then n = n + 1 end end
+	return n == 1
+end)())
+step("settings: other sessions closed", function() NEW_TOOL:client_onDestroy() NEW_TOOL = nil end)
 
 -- destroyed part is pruned
 step("prune", function()

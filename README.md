@@ -42,8 +42,9 @@ creations faster.
   and even timing (no glitches) or fewer gates. Builds that would break the
   game's 255 inputs/outputs per part are refused before anything changes.
 - **Lua scripting**: a built-in editor with syntax highlighting, formatting and
-  examples. Groups are Lua lists of parts, so wiring a decoder or a shift
-  register takes a few lines:
+  a script library (your own scripts saved by name, next to the examples).
+  Groups are Lua lists of parts, so wiring a decoder or a shift register takes
+  a few lines:
 
   ```lua
   -- zip A to B by position
@@ -62,6 +63,7 @@ creations faster.
 | `TobyWand/Scripts/LogicGraph.lua` | Logic graph analysis: timing, loops, truth tables, delay probe, tick simulation and step debugger |
 | `TobyWand/Scripts/LogicScript.lua` | Lua interpreter, scripting API, highlighter and formatter |
 | `TobyWand/Scripts/LogicModule.lua` | Modules: truth table, editing, LUT plan, blueprint rebuild |
+| `TobyWand/Scripts/LogicSettings.lua` | What is remembered between sessions: settings and the script library |
 | `tools/` | Python generators for the meshes, texture, icon and GUI layouts |
 | `tools/logictool_tests/` | Offline tests, run in LuaJIT through lupa |
 
@@ -80,3 +82,6 @@ The tests remove the globals the game's sandbox doesn't have (`setmetatable`,
 Copy `TobyWand/` into
 `%APPDATA%/Axolot Games/Scrap Mechanic/User/User_<id>/Mods/`. If you update an
 installed copy, delete its `Cache` folder.
+
+Settings and saved scripts are kept next to the mod, in `settings.json` and
+`scripts.json`; keep those two files when you update.

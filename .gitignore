@@ -7,5 +7,9 @@ venv/
 # Scrap Mechanic writes this next to an installed mod
 Cache/
 
+# The tool saves these in an installed mod's folder
+TobyWand/settings.json
+TobyWand/scripts.json
+
 # Scratch files
 Pasted image*.png
