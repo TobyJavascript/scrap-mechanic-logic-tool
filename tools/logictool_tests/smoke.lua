@@ -30,6 +30,8 @@ V.__div = function(a, b) return vec(a.x / b, a.y / b, a.z / b) end
 V.__eq = function(a, b) return a.x == b.x and a.y == b.y and a.z == b.z end
 function V:length() return math.sqrt(self.x ^ 2 + self.y ^ 2 + self.z ^ 2) end
 function V:dot(b) return self.x * b.x + self.y * b.y + self.z * b.z end
+function V:min(b) return vec(math.min(self.x, b.x), math.min(self.y, b.y), math.min(self.z, b.z)) end
+function V:max(b) return vec(math.max(self.x, b.x), math.max(self.y, b.y), math.max(self.z, b.z)) end
 V.__tostring = function(a) return string.format("(%g,%g,%g)", a.x, a.y, a.z) end
 
 local Q = {}
@@ -76,7 +78,17 @@ end
 local Body = {}
 Body.__index = Body
 function Body:getCreationBodies() return self.creation end
-function Body:isOnLift() return false end
+function Body:isOnLift() return self.lifted == true end
+function Body:getWorldAabb()
+	local lo, hi
+	for _, s in ipairs(self.shapes) do
+		local p = s.worldPosition
+		lo = lo and vec(math.min(lo.x, p.x), math.min(lo.y, p.y), math.min(lo.z, p.z)) or p
+		hi = hi and vec(math.max(hi.x, p.x), math.max(hi.y, p.y), math.max(hi.z, p.z)) or p
+	end
+	lo = lo or vec(0, 0, 0)
+	return lo, hi or lo
+end
 function Body:getCreationShapes()
 	local o = {}
 	for _, b in ipairs(self.creation) do for _, s in ipairs(b.shapes) do o[#o + 1] = s end end
@@ -175,6 +187,7 @@ local function newGui() return setmetatable({ buttons = {}, textCbs = {}, texts 
 
 local raycast = { hit = false }
 JSON_STORE, IMPORTS = {}, {}
+LIFT, PLACED = nil, {}
 CAM = { pos = vec(0, -2, 0), dir = vec(0, 1, 0) }
 
 sm = {
@@ -202,7 +215,13 @@ sm = {
 		getKeyBinding = function(n) return "[" .. n .. "]" end,
 	},
 	audio = { play = function() end },
-	localPlayer = { getRaycast = function() return raycast.hit, raycast.res end },
+	localPlayer = { getRaycast = function() return raycast.hit, raycast.res end,
+		getOwnedLift = function() return LIFT end },
+	player = { placeLift = function(player, bodies, pos, level, rot)
+		assert(SERVER, "placeLift on client")
+		PLACED[#PLACED + 1] = { bodies = bodies, pos = pos, level = level, rot = rot }
+		for _, b in ipairs(bodies) do b.lifted = true end
+	end },
 	camera = { getPosition = function() return CAM.pos end, getDirection = function() return CAM.dir end },
 	creation = {
 		exportToTable = function(b)
@@ -298,7 +317,7 @@ dofile("$CONTENT_DATA/Scripts/LogicTool.lua")
 
 -- no accidental globals from here on
 local allowed = { CAM = true, LogicTool = true, LogicScript = true, LogicGraph = true, LogicModule = true, SERVER = true, clamp = true,
-	JSON_STORE = true, IMPORTS = true, DBG = true }
+	JSON_STORE = true, IMPORTS = true, DBG = true, LIFT = true, PLACED = true }
 setmetatable(_G, {
 	__newindex = function(t, k, v)
 		if not allowed[k] then error("global write: " .. tostring(k), 2) end
@@ -764,12 +783,25 @@ step("build xor: load the restored switches > gate", function()
 	tool:cl_onModuleTableChanged("moduleTable", t)
 end)
 check("build xor: style", tool.cl.gui.texts.lutStyle == "XOR (PPRM)" and moduleInfo():find("XOR (PPRM): 2 term AND(s) = 2 new gate(s), 2 ticks", 1, true), moduleInfo())
+-- this one is on the player's lift: it must go back on it
+step("build xor: lift it", function()
+	IMPORTS[2].lifted = true
+	LIFT = { worldPosition = vec(0.5, 0.75, 0.25), level = 3 }
+end)
 step("build xor: preview", function() press("buildLut") end)
+check("build xor: preview says back on the lift", moduleInfo():find("goes back on the lift", 1, true), moduleInfo())
 check("build xor: preview frames", tool.cl.lutPreview and #tool.cl.lutPreview.effects == 5, tool.cl.lutPreview and #tool.cl.lutPreview.effects)
 step("build xor: apply and check", function() press("buildLut") tool:client_onUpdate(0.3) tool:client_onUpdate(0.3) end)
 local xB = tool.cl.groups.B[1] and tool.cl.groups.B[1].inter
 check("build xor: B is an XOR with 2 terms", xB and xB.ctrl.mode == 2 and #xB.parents == 2, xB and (tostring(xB.ctrl.mode) .. " " .. #xB.parents))
 check("build xor: checked against the table", result():find("matches your table", 1, true), result())
+check("build xor: back on the lift", #PLACED == 1 and PLACED[1].bodies[1] == IMPORTS[3] and PLACED[1].level == 3
+	and PLACED[1].rot == 0 and PLACED[1].pos.z == 1, #PLACED .. " " .. tostring(PLACED[1] and PLACED[1].pos))
+check("build xor: no stands-free note", (function()
+	for _, c in ipairs(chats) do if c:find("stands free", 1, true) then return false end end
+	return true
+end)())
+LIFT = nil
 step("build xor: back to Auto", function() press("lutStyle") end)
 check("build xor: Auto again", tool.cl.gui.texts.lutStyle == "Auto")
 step("build: cancel", function()

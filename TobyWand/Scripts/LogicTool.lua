@@ -723,6 +723,37 @@ function LogicTool:sv_lutPrepare(data)
 	}
 end
 
+-- A rebuilt creation comes back standing free; put it on the player's lift
+-- again (Bingo's editor does the same). `lift` = { pos (m), level } from the
+-- client. The lift is moved under the new creation's centre, so a creation
+-- that grew doesn't jump; rotation 0 keeps it as it stands (the game's lift
+-- tool also starts every pickup at 0).
+function LogicTool:sv_relift(player, creation, lift)
+	if not (lift and lift.pos and lift.level) then return false end
+	local ok = pcall(function()
+		local lowest, highest
+		for _, b in ipairs(creation) do
+			if sm.exists(b) then
+				local lo, hi = b:getWorldAabb()
+				lowest = lowest and lowest:min(lo) or lo
+				highest = highest and highest:max(hi) or hi
+			end
+		end
+		local base = lift.pos * 4 -- the lift's grid position (blocks)
+		local pos = sm.vec3.new(base.x, base.y, base.z)
+		if lowest then
+			local diff = ((lowest + highest) * 0.5 - lift.pos) * 4
+			local function snap(v)
+				if v >= -1 and v <= 1 then return 0 end
+				return math.floor(v + 0.5)
+			end
+			pos = sm.vec3.new(base.x + snap(diff.x), base.y + snap(diff.y), base.z)
+		end
+		sm.player.placeLift(player, creation, pos, lift.level, 0)
+	end)
+	return ok
+end
+
 function LogicTool:sv_lutBuild(data, player)
 	local ok, err = pcall(function()
 		local ctx, perr = self:sv_lutPrepare(data)
@@ -762,6 +793,7 @@ function LogicTool:sv_lutBuild(data, player)
 		for _, shape in ipairs(ctx.home:getCreationShapes()) do
 			if sm.exists(shape) then shape:destroyShape() end
 		end
+		local relifted = ctx.lifted and self:sv_relift(player, creation, data.lift) or false
 		self.sv.lutUndo[player.id] = { json = sm.json.writeJsonString(ctx.oldBp), bodies = creation }
 		self.sv.undo[player.id] = {} -- wire undo pointed at the old parts
 
@@ -789,7 +821,7 @@ function LogicTool:sv_lutBuild(data, player)
 		local found = #newA == ctx.nA and #newB == ctx.nB
 		self.network:sendToClient(player, "cl_onLutBuilt", {
 			A = found and newA or nil, B = found and newB or nil,
-			gates = ctx.plan.counts.gates, removed = #ctx.removeInters, lifted = ctx.lifted,
+			gates = ctx.plan.counts.gates, removed = #ctx.removeInters, lifted = ctx.lifted, relifted = relifted,
 		})
 	end)
 	if not ok then
@@ -798,7 +830,7 @@ function LogicTool:sv_lutBuild(data, player)
 end
 
 -- Puts back the creation as it was before the last build.
-function LogicTool:sv_lutUndo(_, player)
+function LogicTool:sv_lutUndo(data, player)
 	local u = self.sv.lutUndo[player.id]
 	if not u then
 		self.network:sendToClient(player, "cl_message", "No build to undo")
@@ -806,6 +838,7 @@ function LogicTool:sv_lutUndo(_, player)
 	end
 	local body
 	for _, b in ipairs(u.bodies) do if sm.exists(b) then body = b break end end
+	local lifted = body ~= nil and body:isOnLift()
 	local creation = sm.creation.importFromString(sm.world.getCurrentWorld(), u.json, nil, nil, true)
 	if not creation then
 		self.network:sendToClient(player, "cl_message", "#ff4040Undo build failed: the game refused the old blueprint")
@@ -816,9 +849,10 @@ function LogicTool:sv_lutUndo(_, player)
 			if sm.exists(shape) then shape:destroyShape() end
 		end
 	end
+	local relifted = lifted and self:sv_relift(player, creation, data and data.lift) or false
 	self.sv.lutUndo[player.id] = nil
 	self.sv.undo[player.id] = {}
-	self.network:sendToClient(player, "cl_onLutBuilt", { undone = true })
+	self.network:sendToClient(player, "cl_onLutBuilt", { undone = true, lifted = lifted, relifted = relifted })
 end
 
 function LogicTool:sv_analyze(data, player)
@@ -2273,8 +2307,18 @@ function LogicTool:cl_buildLut()
 	end
 	self.network:sendToServer("sv_lutBuild", {
 		A = self:cl_inters("A"), B = self:cl_inters("B"), rows = rows, style = LUT_STYLES[self.cl.lutStyle],
-		even = self.cl.lutEven, compress = self.cl.lutCompress, apply = apply,
+		even = self.cl.lutEven, compress = self.cl.lutCompress, apply = apply, lift = self:cl_liftInfo(),
 	})
+end
+
+-- Where the player's lift is (only the client can ask), so a rebuilt
+-- creation can go back on it.
+function LogicTool:cl_liftInfo()
+	local ok, lift = pcall(sm.localPlayer.getOwnedLift)
+	if not (ok and lift and sm.exists(lift)) then return nil end
+	local okp, pos = pcall(function() return lift.worldPosition end)
+	local okl, level = pcall(function() return lift.level end)
+	if okp and okl and pos and level then return { pos = pos, level = level } end
 end
 
 function LogicTool:cl_clearLutPreview(quiet)
@@ -2325,7 +2369,8 @@ function LogicTool:cl_onLutPreview(r)
 		lines[#lines + 1] = "#ff6060The table is all 0: this build only removes the old logic and builds nothing.#ffffff"
 	end
 	if r.lifted then
-		lines[#lines + 1] = "#ffcc40It's on a lift: after the build it stands free in the same spot.#ffffff"
+		lines[#lines + 1] = self:cl_liftInfo() and "It's on your lift: it goes back on the lift after the build."
+			or "#ffcc40It's on a lift that isn't yours: after the build it stands free in the same spot.#ffffff"
 	end
 	self.cl.gui:setText("moduleInfo", (self.cl.moduleInfoText or "") .. table.concat(lines, "\n"))
 	sm.gui.displayAlertText((r.gates or 0) == 0 and "#ff6060Table is all 0: Apply would only remove logic"
@@ -2362,7 +2407,9 @@ function LogicTool:cl_onLutBuilt(r)
 		self.cl.verifyRows = nil
 		self:cl_message("Built. Select A and B again to load the new module (couldn't find them after the rebuild).")
 	end
-	if r.lifted then chat("The creation was on a lift; it now stands free. Put it back on the lift if you need to.") end
+	if r.lifted and not r.relifted then
+		chat("The creation was on a lift; it now stands free. Put it back on the lift if you need to.")
+	end
 	self:cl_refreshGui()
 end
 
@@ -2606,7 +2653,7 @@ function LogicTool:cl_onButton(name)
 		end
 	elseif name == "undoLut" then
 		self:cl_clearLutPreview()
-		self.network:sendToServer("sv_lutUndo")
+		self.network:sendToServer("sv_lutUndo", { lift = self:cl_liftInfo() })
 	elseif name == "loadModule" then
 		self.cl.verify = nil
 		self:cl_clearLutPreview()
