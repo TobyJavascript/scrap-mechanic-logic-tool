@@ -14,6 +14,11 @@ creations faster.
   A mode dropdown picks whether those buttons connect, cut or flip (toggle)
   the wires. You can also clear the active group's inputs or outputs, and
   Undo reverts the last action.
+- **Wire click mode and log**: switch clicks from selecting to wiring, and
+  TobyWand works like the game's connect tool (pick a source, click the parts
+  it feeds, click again to cut). Every wire change made with the tool is
+  logged; View log steps through the entries in the world (green arrows for
+  wires added, red for removed) and can undo any entry, not only the last.
 - **Bulk edit**: set every gate in the active group to one mode (AND, XOR…)
   or every timer to one delay (`5t`, `2s`, `1s 5t`). The creation is rebuilt
   from its blueprint, stays on the lift, keeps your groups, and Undo puts it

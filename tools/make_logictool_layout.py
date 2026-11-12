@@ -132,14 +132,16 @@ def main_layout():
     y += 0.055
     # windows that open on the left (one at a time)
     kids += [blue(b) for b in button_row(y, [("openScript", "< Script"), ("openModule", "< Module"),
-                                             ("openDebug", "< Debug"), ("openSettings", "< Settings")])]
+                                             ("openDebug", "< Debug"), ("openLog", "< Log"),
+                                             ("openSettings", "< Settings")])]
     y += ROW_H + GAP + 0.005
 
     # Groups
     kids.append(section(y, "GROUPS"))
     y += 0.032
-    kids.append(dropdown(PAD, y, 0.28, ROW_H, "active"))
-    kids.append(text(PAD + 0.30, y, 1 - 2 * PAD - 0.30, ROW_H, "A 0   B 0   C 0", name="groupInfo", align="Left VCenter"))
+    kids.append(dropdown(PAD, y, 0.27, ROW_H, "active"))
+    kids.append(dropdown(PAD + 0.28, y, 0.27, ROW_H, "clickMode"))
+    kids.append(text(PAD + 0.57, y, 1 - 2 * PAD - 0.57, ROW_H, "A 0   B 0   C 0", name="groupInfo", align="Left VCenter"))
     y += ROW_H + GAP
     kids += button_row(y, [("clearActive", "Clear group"), ("clearAll", "Clear all groups")])
     y += ROW_H + GAP
@@ -208,7 +210,23 @@ def main_layout():
     sk.append(edit_box(PAD, y, 1 - 2 * PAD, 1 - y - 0.02, "script"))
     script = W("Widget", "HudBackgroundLarge", 0.02, 0.06, 0.36, 0.88, "scriptWindow",
                props=[("Visible", "false")], children=sk)
-    return [panel, script, settings_window(), module_window(), debug_window()]
+    return [panel, script, settings_window(), module_window(), debug_window(), log_window()]
+
+
+def log_window():
+    """Log (left, hidden until opened): every wire change made with the tool."""
+    lk = []
+    y = 0.015
+    lk.append(text(PAD, y, 0.4, 0.045, "LOG", font="SM_Button"))
+    lk.append(button(1 - PAD - 0.2, y + 0.005, 0.2, 0.035, "Hide", "closeLog", skin=CLOSE_SKIN))
+    y += 0.055
+    row = button_row(y, [("logView", "View log"), ("logClear", "Clear log")])
+    overlay_caption(row[0], RUN_SKIN, "View log")
+    lk += row
+    y += ROW_H + GAP + 0.005
+    lk.append(edit_box(PAD, y, 1 - 2 * PAD, 1 - y - 0.02, "logList", read_only=True))
+    return W("Widget", "HudBackgroundLarge", 0.02, 0.06, 0.36, 0.88, "logWindow",
+             props=[("Visible", "false")], children=lk)
 
 
 def module_window():

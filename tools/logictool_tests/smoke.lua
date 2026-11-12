@@ -203,6 +203,7 @@ local function newGui() return setmetatable({ buttons = {}, textCbs = {}, texts 
 
 local raycast = { hit = false }
 JSON_STORE, IMPORTS = {}, {}
+TICK = 1000
 FILES = {}
 NEW_TOOL = nil
 function BOX_NAME_OF(i) return ({ "3d", "xy", "xz", "yz" })[i] end
@@ -248,6 +249,7 @@ sm = {
 		for _, b in ipairs(bodies) do b.lifted = true end
 	end },
 	camera = { getPosition = function() return CAM.pos end, getDirection = function() return CAM.dir end },
+	game = { getCurrentTick = function() return TICK end },
 	creation = {
 		exportToTable = function(b)
 			assert(SERVER, "export on client")
@@ -353,7 +355,7 @@ dofile("$CONTENT_DATA/Scripts/LogicTool.lua")
 
 -- no accidental globals from here on
 local allowed = { CAM = true, LogicTool = true, LogicScript = true, LogicGraph = true, LogicModule = true, SERVER = true, clamp = true,
-	JSON_STORE = true, IMPORTS = true, DBG = true, LIFT = true, PLACED = true, FILES = true, JSON_COPY = true, NEW_TOOL = true, BOX_NAME_OF = true }
+	JSON_STORE = true, IMPORTS = true, DBG = true, LIFT = true, PLACED = true, FILES = true, JSON_COPY = true, NEW_TOOL = true, BOX_NAME_OF = true, TICK = true }
 setmetatable(_G, {
 	__newindex = function(t, k, v)
 		if not allowed[k] then error("global write: " .. tostring(k), 2) end
@@ -1140,6 +1142,76 @@ check("bulk: undo restores the timer, groups follow", newA(3) and newA(3).ctrl.t
 	and newA(1).ctrl.mode == 3 and #tool.cl.groups.A == 4 and result():find("Edit undone", 1, true), result())
 step("bulk: undo again = nothing", function() press("undo") end)
 check("bulk: only one rebuild undo", newA(1) and newA(1).ctrl.mode == 3, newA(1) and newA(1).ctrl.mode)
+
+-- Click: Wire and the wiring log
+local function clickAt(inter, right)
+	lookAt(inter)
+	if right then
+		tool:client_onEquippedUpdate(S.null, S.start, false) tool:client_onEquippedUpdate(S.null, S.stop, false)
+	else
+		tool:client_onEquippedUpdate(S.start, S.null, false) tool:client_onEquippedUpdate(S.stop, S.null, false)
+	end
+end
+step("wire: setup", function()
+	tool.cl.gui:close()
+	press("clearAll")
+	local nb = setmetatable({ id = newId(), worldPosition = vec(0, 0, 0), worldRotation = quat(), shapes = {} }, Body)
+	nb.creation = { nb }
+	DBG = {
+		sw = addPart(UUID_SWITCH, 30, 0, 0, nil, nil, nb),
+		g1 = addPart(UUID_GATE, 30, 2, 0, { mode = 0 }, nil, nb),
+		g2 = addPart(UUID_GATE, 30, 4, 0, { mode = 1 }, nil, nb),
+		logWas = #tool.cl.log,
+	}
+	tool:cl_dd_clickMode("Click: Wire")
+end)
+check("wire: mode on", tool.cl.clickMode == 2 and tool.cl.ddShown.clickMode == "Click: Wire")
+step("wire: pick the switch", function() clickAt(DBG.sw) end)
+check("wire: source picked, nothing wired, not added to a group", tool.cl.wireSource and tool.cl.wireSource.inter == DBG.sw
+	and #DBG.sw.children == 0 and #tool.cl.groups.A == 0)
+step("wire: click g1 then g2", function() clickAt(DBG.g1) clickAt(DBG.g2) end)
+check("wire: both connected, source kept", #DBG.sw.children == 2 and tool.cl.wireSource ~= nil, #DBG.sw.children)
+check("wire: two log entries", #tool.cl.log == DBG.logWas + 2 and tool.cl.log[#tool.cl.log].label == "Wire"
+	and tool.cl.log[#tool.cl.log].made == 1, #tool.cl.log)
+step("wire: draw", function() tool:client_onUpdate(0.016) end)
+check("wire: source arrows", (function()
+	local n = 0
+	for _, e in ipairs(tool.cl.lines) do if e.playing then n = n + 1 end end
+	return n == 4
+end)())
+step("wire: click g1 again cuts", function() clickAt(DBG.g1) end)
+check("wire: cut like the connect tool", #DBG.sw.children == 1 and DBG.sw.children[1] == DBG.g2 and tool.cl.log[#tool.cl.log].cut == 1)
+step("wire: right click drops the source", function() clickAt(nil, true) end)
+check("wire: source dropped, group unchanged", tool.cl.wireSource == nil and tool.cl.active == "A")
+step("log: window", function() tool.cl.gui:open() press("openLog") end)
+check("log: list newest first", tool.cl.gui.visible.logWindow == true and tool.cl.gui.texts.openLogText == "Hide log"
+	and (tool.cl.gui.texts.logList or ""):find("#" .. tool.cl.log[#tool.cl.log].id .. "  Wire  #ff60601 cut", 1, true), tool.cl.gui.texts.logList)
+step("log: view", function() TICK = TICK + 40 * 90 press("logView") end)
+local function lv() return tool.cl.logView end
+check("log: viewing the newest, the cut wire", lv() and lv().pos == #tool.cl.log and lv().entry and #lv().entry.wires == 1
+	and lv().entry.wires[1].kind == "cut" and #tool.cl.debugFrames == 2 and not tool.cl.gui:isActive())
+step("log: hud", function() tool:client_onUpdate(0.016) end)
+check("log: hud text", tool.cl.stepGui:isActive() and tool.cl.stepGui.texts.stepTick:find("Log " .. #tool.cl.log .. " / ", 1, true)
+	and tool.cl.stepGui.texts.stepOutputs:find("1 min ago", 1, true), tool.cl.stepGui.texts.stepOutputs)
+step("log: left click = older", function() clickAt(DBG.g1) end)
+check("log: older entry is sw > g2 connected", lv().entry and lv().entry.wires[1].c == DBG.g2 and lv().entry.wires[1].kind == "connect")
+step("log: Q undoes the shown entry", function() tool:client_onToggle() end)
+check("log: sw > g2 cut, a new entry, marked undone", #DBG.sw.children == 0 and tool.cl.log[lv().pos].undone == true
+	and tool.cl.log[#tool.cl.log].label:find("Undo #", 1, true) and lv().pos == #tool.cl.log - 2, tool.cl.log[#tool.cl.log].label)
+step("log: Q again", function() tool:client_onToggle() end)
+check("log: already undone", alerts[#alerts]:find("Already undone", 1, true) and #DBG.sw.children == 0, alerts[#alerts])
+step("log: R stops", function() tool:client_onReload() end)
+check("log: stopped, menu open, frames gone", tool.cl.logView == nil and tool.cl.gui:isActive() and #tool.cl.debugFrames == 0)
+step("log: the Undo button undoes the entry undo", function() press("undo") end)
+check("log: sw > g2 back", #DBG.sw.children == 1 and DBG.sw.children[1] == DBG.g2)
+step("log: clear needs two presses", function() press("logClear") end)
+check("log: not cleared yet", #tool.cl.log > 0)
+step("log: clear", function() press("logClear") end)
+check("log: cleared", #tool.cl.log == 0 and (tool.cl.gui.texts.logList or ""):find("Nothing logged yet", 1, true))
+step("log: view empty", function() press("logView") end)
+check("log: empty refused", tool.cl.logView == nil)
+step("wire: back to select", function() tool:cl_dd_clickMode("Click: Select") press("closeLog") tool.cl.gui:close() end)
+check("wire: select mode", tool.cl.clickMode == 1 and tool.cl.wireSource == nil)
 
 -- destroyed part is pruned
 step("prune", function()

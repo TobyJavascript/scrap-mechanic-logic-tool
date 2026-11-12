@@ -11,7 +11,7 @@
             <Property key="FontName" value="SM_ButtonTiny"/>
             <Property key="TextAlign" value="Center"/>
         </Widget>
-        <Widget type="Button" skin="SchematicbotButtonBlue" position_real="0.0300 0.0700 0.2260 0.0400" name="openScript">
+        <Widget type="Button" skin="SchematicbotButtonBlue" position_real="0.0300 0.0700 0.1784 0.0400" name="openScript">
             <Widget type="TextBox" skin="TextBox" position_real="0.0000 0.0000 1.0000 1.0000" name="openScriptText">
                 <Property key="Caption" value="&lt; Script"/>
                 <Property key="FontName" value="SM_ButtonTiny"/>
@@ -21,7 +21,7 @@
                 <Property key="NeedKey" value="false"/>
             </Widget>
         </Widget>
-        <Widget type="Button" skin="SchematicbotButtonBlue" position_real="0.2680 0.0700 0.2260 0.0400" name="openModule">
+        <Widget type="Button" skin="SchematicbotButtonBlue" position_real="0.2204 0.0700 0.1784 0.0400" name="openModule">
             <Widget type="TextBox" skin="TextBox" position_real="0.0000 0.0000 1.0000 1.0000" name="openModuleText">
                 <Property key="Caption" value="&lt; Module"/>
                 <Property key="FontName" value="SM_ButtonTiny"/>
@@ -31,7 +31,7 @@
                 <Property key="NeedKey" value="false"/>
             </Widget>
         </Widget>
-        <Widget type="Button" skin="SchematicbotButtonBlue" position_real="0.5060 0.0700 0.2260 0.0400" name="openDebug">
+        <Widget type="Button" skin="SchematicbotButtonBlue" position_real="0.4108 0.0700 0.1784 0.0400" name="openDebug">
             <Widget type="TextBox" skin="TextBox" position_real="0.0000 0.0000 1.0000 1.0000" name="openDebugText">
                 <Property key="Caption" value="&lt; Debug"/>
                 <Property key="FontName" value="SM_ButtonTiny"/>
@@ -41,7 +41,17 @@
                 <Property key="NeedKey" value="false"/>
             </Widget>
         </Widget>
-        <Widget type="Button" skin="SchematicbotButtonBlue" position_real="0.7440 0.0700 0.2260 0.0400" name="openSettings">
+        <Widget type="Button" skin="SchematicbotButtonBlue" position_real="0.6012 0.0700 0.1784 0.0400" name="openLog">
+            <Widget type="TextBox" skin="TextBox" position_real="0.0000 0.0000 1.0000 1.0000" name="openLogText">
+                <Property key="Caption" value="&lt; Log"/>
+                <Property key="FontName" value="SM_ButtonTiny"/>
+                <Property key="TextAlign" value="Center"/>
+                <Property key="TextColour" value="1 1 1"/>
+                <Property key="NeedMouse" value="false"/>
+                <Property key="NeedKey" value="false"/>
+            </Widget>
+        </Widget>
+        <Widget type="Button" skin="SchematicbotButtonBlue" position_real="0.7916 0.0700 0.1784 0.0400" name="openSettings">
             <Widget type="TextBox" skin="TextBox" position_real="0.0000 0.0000 1.0000 1.0000" name="openSettingsText">
                 <Property key="Caption" value="&lt; Settings"/>
                 <Property key="FontName" value="SM_ButtonTiny"/>
@@ -57,9 +67,11 @@
             <Property key="FontName" value="SM_HeaderTiny"/>
             <Property key="TextColour" value="0.85 0.65 0.2"/>
         </Widget>
-        <Widget type="Widget" skin="PanelEmpty" position_real="0.0300 0.1550 0.2800 0.0400" name="active">
+        <Widget type="Widget" skin="PanelEmpty" position_real="0.0300 0.1550 0.2700 0.0400" name="active">
         </Widget>
-        <Widget type="TextBox" skin="TextBox" position_real="0.3300 0.1550 0.6400 0.0400" name="groupInfo">
+        <Widget type="Widget" skin="PanelEmpty" position_real="0.3100 0.1550 0.2700 0.0400" name="clickMode">
+        </Widget>
+        <Widget type="TextBox" skin="TextBox" position_real="0.6000 0.1550 0.3700 0.0400" name="groupInfo">
             <Property key="Caption" value="A 0   B 0   C 0"/>
             <Property key="TextAlign" value="Left VCenter"/>
             <Property key="FontName" value="SM_TextLabel"/>
@@ -615,6 +627,47 @@
         </Widget>
         <Widget type="Widget" skin="SearchBarBackground" position_real="0.0300 0.4850 0.9400 0.4950">
             <Widget type="EditBox" skin="EditBoxStretch" position_real="0.0100 0.0200 0.9800 0.9600" name="debugInfo">
+                <Property key="MultiLine" value="true"/>
+                <Property key="WordWrap" value="true"/>
+                <Property key="TextAlign" value="Left Top"/>
+                <Property key="FontName" value="SM_TextSmall"/>
+                <Property key="TextColour" value="1 1 1"/>
+                <Property key="MaxTextLength" value="100000"/>
+                <Property key="VisibleVScroll" value="true"/>
+                <Property key="Caption" value=""/>
+                <Property key="ReadOnly" value="true"/>
+            </Widget>
+        </Widget>
+    </Widget>
+    <Widget type="Widget" skin="HudBackgroundLarge" position_real="0.0200 0.0600 0.3600 0.8800" name="logWindow">
+        <Property key="Visible" value="false"/>
+        <Widget type="TextBox" skin="TextBox" position_real="0.0300 0.0150 0.4000 0.0450">
+            <Property key="Caption" value="LOG"/>
+            <Property key="TextAlign" value="Left VCenter"/>
+            <Property key="FontName" value="SM_Button"/>
+        </Widget>
+        <Widget type="Button" skin="SecondaryButton" position_real="0.7700 0.0200 0.2000 0.0350" name="closeLog">
+            <Property key="Caption" value="Hide"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Button" skin="SchematicbotButtonGreen" position_real="0.0300 0.0700 0.4640 0.0400" name="logView">
+            <Widget type="TextBox" skin="TextBox" position_real="0.0000 0.0000 1.0000 1.0000">
+                <Property key="Caption" value="View log"/>
+                <Property key="FontName" value="SM_ButtonTiny"/>
+                <Property key="TextAlign" value="Center"/>
+                <Property key="TextColour" value="1 1 1"/>
+                <Property key="NeedMouse" value="false"/>
+                <Property key="NeedKey" value="false"/>
+            </Widget>
+        </Widget>
+        <Widget type="Button" skin="PrimaryButton" position_real="0.5060 0.0700 0.4640 0.0400" name="logClear">
+            <Property key="Caption" value="Clear log"/>
+            <Property key="FontName" value="SM_ButtonTiny"/>
+            <Property key="TextAlign" value="Center"/>
+        </Widget>
+        <Widget type="Widget" skin="SearchBarBackground" position_real="0.0300 0.1230 0.9400 0.8570">
+            <Widget type="EditBox" skin="EditBoxStretch" position_real="0.0100 0.0200 0.9800 0.9600" name="logList">
                 <Property key="MultiLine" value="true"/>
                 <Property key="WordWrap" value="true"/>
                 <Property key="TextAlign" value="Left Top"/>

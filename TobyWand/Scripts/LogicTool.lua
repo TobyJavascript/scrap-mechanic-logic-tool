@@ -81,7 +81,18 @@ local MODULE_MAX_OUTPUTS = 32
 local LUT_STYLES = { "auto", "rom", "xor" }
 local LUT_STYLE_NAMES = { auto = "Auto", rom = "ROM", xor = "XOR (PPRM)" }
 -- buttons that open a window on the left (one at a time)
-local LEFT_WINDOWS = { openScript = "script", openSettings = "settings", openModule = "module", openDebug = "debug" }
+local LEFT_WINDOWS = { openScript = "script", openSettings = "settings", openModule = "module", openDebug = "debug", openLog = "log" }
+
+-- What a left click on a part does: add it to the active group, or wire like
+-- the game's connect tool (pick a source, then click the parts it feeds)
+local CLICK_MODES = { "select", "wire" }
+local CLICK_NAMES = { select = "Click: Select", wire = "Click: Wire" }
+local LOG_HINT = "Every wire change you make with TobyWand is logged here: the buttons, scripts, Undo, "
+	.. "and Click: Wire (which works like the game's connect tool, but logged). Wires made with the game's "
+	.. "own connect tool are not.\n\n"
+	.. "View log shows one entry at a time in the world: green arrows for wires it added, red for wires it "
+	.. "removed. Left click goes to older entries, right click to newer, Q undoes the one shown (any entry, "
+	.. "not only the last), R stops.\n\nThe log keeps the last 200 entries until you leave the world."
 local MODULE_HINT = "Put the inputs in A and the outputs in B (in order), then press Load.\n\n"
 	.. "The tool reads the logic between them and shows it as a table: every input combination "
 	.. "and what the outputs do. Edit the outputs, then Build LUT rebuilds that logic as a clean LUT."
@@ -91,6 +102,23 @@ local DEBUG_INPUT_MODES = { "hold", "pulse", "repeat", "free" }
 local DEBUG_INPUT_NAMES = { hold = "Constant input", pulse = "1 tick pulse", ["repeat"] = "Pulse every N ticks", free = "Free after tick 0" }
 local DEBUG_EVERY_MAX = 10000
 local COLOR_STEADY = sm.color.new("d8b000ff") -- step debugger: on, but didn't change this tick
+local COLOR_SOURCE = sm.color.new("ffffffff") -- Wire click mode: the picked source part
+local LOG_MAX = 200          -- wiring log entries kept per player (this session)
+local LOG_DRAW_MAX = 300     -- wires of one entry sent to the client to draw
+
+-- The game tick (40 a second), for "2 min ago"; nil if the game can't say.
+local function nowTick()
+	local ok, t = pcall(function() return sm.game.getCurrentTick() end)
+	return ok and type(t) == "number" and t or nil
+end
+
+local function agoText(ticks)
+	if not ticks then return "" end
+	local s = math.floor(ticks / 40)
+	if s < 60 then return s .. " s ago" end
+	if s < 3600 then return math.floor(s / 60) .. " min ago" end
+	return string.format("%d h %d min ago", math.floor(s / 3600), math.floor(s / 60) % 60)
+end
 local DEBUG_NET_LIMIT = 600     -- changed parts sent to the client per tick
 local DEBUG_MAX_FRAMES = 300    -- changed parts framed in the world
 local DEBUG_LOOKAHEAD = 64      -- countdown labels look this many ticks ahead
@@ -178,6 +206,16 @@ local HELP_TEXT = [[CONTROLS
   F + right click   delays from that part; again: delays to it; again: off
   Q                 box select mode: 3D / XY / XZ / YZ layer
 
+CLICK: WIRE (the dropdown next to Active)
+  Click             pick the source, then click the parts it feeds
+                    (click a wired part again to cut, like the connect tool)
+  Right click       drop the source
+
+LOG (Log window, then View log)
+  Left / right click   older / newer entry
+  Q                    undo the entry shown
+  R                    stop
+
 STEP DEBUGGER (Debug window, then Start debug)
   Left / right click   one tick forward / back
   Q                    run / pause
@@ -260,7 +298,7 @@ end
 ---------------------------------------------------------------------------
 
 function LogicTool:server_onCreate()
-	self.sv = { undo = {}, pending = {}, lutUndo = {}, debug = {} }
+	self.sv = { undo = {}, pending = {}, lutUndo = {}, debug = {}, log = {} }
 end
 
 -- Apply a chunk of connect/cut/clear operations from a client.
@@ -326,11 +364,82 @@ function LogicTool:sv_applyOps(data, player)
 			if #stack > 20 then table.remove(stack, 1) end
 			self.sv.undo[pid] = stack
 		end
+		local entry = #pending.changed > 0 and self:sv_logAdd(player, data.label or "Wire", pending) or nil
 		self.network:sendToClient(player, "cl_onOpsDone", {
 			made = pending.made, cut = pending.cut, skipped = pending.skipped,
-			failed = pending.failed, isUndo = pending.isUndo, label = data.label
+			failed = pending.failed, isUndo = pending.isUndo, label = data.label,
+			entry = entry, undoneId = data.undoneId,
 		})
 	end
+end
+
+---------------------------------------------------------------------------
+-- SERVER: wiring log (every wire change made with the tool, this session)
+---------------------------------------------------------------------------
+
+-- Adds a batch of changes; returns the summary the client keeps.
+function LogicTool:sv_logAdd(player, label, pending)
+	local log = self.sv.log[player.id]
+	if not log then
+		log = { entries = {}, nextId = 1 }
+		self.sv.log[player.id] = log
+	end
+	local changes = {}
+	for i, ch in ipairs(pending.changed) do changes[i] = { kind = ch.kind, p = ch.p, c = ch.c } end
+	local e = { id = log.nextId, label = label, tick = nowTick(), changes = changes,
+		made = pending.made, cut = pending.cut }
+	log.nextId = log.nextId + 1
+	log.entries[#log.entries + 1] = e
+	if #log.entries > LOG_MAX then table.remove(log.entries, 1) end
+	return { id = e.id, label = e.label, tick = e.tick, made = e.made, cut = e.cut }
+end
+
+local function logEntry(self, player, id)
+	local log = self.sv.log[player.id]
+	for _, e in ipairs(log and log.entries or {}) do
+		if e.id == id then return e end
+	end
+end
+
+function LogicTool:sv_logClear(_, player)
+	self.sv.log[player.id] = nil
+end
+
+-- The wires of one entry, to draw them.
+function LogicTool:sv_logShow(data, player)
+	local e = logEntry(self, player, data.id)
+	if not e then
+		self.network:sendToClient(player, "cl_onLogEntry", { id = data.id, missing = true })
+		return
+	end
+	local wires, gone = {}, 0
+	for _, ch in ipairs(e.changes) do
+		if sm.exists(ch.p) and sm.exists(ch.c) then
+			if #wires < LOG_DRAW_MAX then wires[#wires + 1] = { kind = ch.kind, p = ch.p, c = ch.c } end
+		else
+			gone = gone + 1
+		end
+	end
+	self.network:sendToClient(player, "cl_onLogEntry", {
+		id = e.id, wires = wires, total = #e.changes, gone = gone, now = nowTick(),
+	})
+end
+
+-- Undoes one entry (any entry, not only the last): what it connected is cut,
+-- what it cut is connected again. Wires already back the way they were are
+-- left alone. The undo is itself a new entry.
+function LogicTool:sv_logUndo(data, player)
+	local e = logEntry(self, player, data.id)
+	if not e then
+		self.network:sendToClient(player, "cl_message", "That log entry is gone (the log keeps the last " .. LOG_MAX .. ")")
+		return
+	end
+	local ops = {}
+	for i = #e.changes, 1, -1 do
+		local ch = e.changes[i]
+		ops[#ops + 1] = { kind = ch.kind == "connect" and "cut" or "connect", p = ch.p, c = ch.c }
+	end
+	self:sv_applyOps({ ops = ops, first = true, last = true, label = "Undo #" .. e.id .. " " .. e.label, undoneId = e.id }, player)
 end
 
 function LogicTool:sv_undo(data, player)
@@ -1353,6 +1462,10 @@ function LogicTool:client_onCreate()
 		debugEveryText = "4",                  -- setting: N for "Pulse every N ticks"
 		debugInputText = "",                   -- the debug window's input digits
 		bulkMode = 3,                          -- setting: index in BULK_MODES (XOR)
+		clickMode = 1,                         -- setting: index in CLICK_MODES
+		wireSource = nil,                      -- Click: Wire: { inter =, effect = } the picked source
+		log = {},                              -- wiring log summaries { id, label, tick, made, cut, undone }, oldest first
+		logView = nil,                         -- while browsing the log: { pos =, entry =, pending = }
 		bulkTimerText = "0s 5t",               -- setting: what Set timers sets
 		bulkBusy = false,                      -- a bulk edit is on its way to the server
 		debugFrames = {},                      -- frames on the parts that changed this tick
@@ -1372,7 +1485,7 @@ function LogicTool:client_onCreate()
 	for _, name in ipairs({ "close", "clearActive", "clearAll", "undo", "sortX", "sortY", "sortZ", "reverse",
 		"allToAll", "zip", "chain", "ring", "selfWire", "clearOut", "clearIn", "timing", "truth", "lint",
 		"clearMarks", "libPrev", "libNext", "libSave", "libDelete", "run", "help", "probeFwd", "probeBack", "openScript", "closeScript", "openSettings", "closeSettings", "openModule", "closeModule", "loadModule", "resetModule", "buildLut", "cancelLut", "undoLut", "format",
-		"openDebug", "closeDebug", "debugFromGame", "debugStart", "setGates", "setTimers" }) do
+		"openDebug", "closeDebug", "debugFromGame", "debugStart", "openLog", "closeLog", "logView", "logClear", "setGates", "setTimers" }) do
 		gui:setButtonCallback(name, "cl_onButton")
 	end
 	gui:setTextChangedCallback("script", "cl_onScriptChanged")
@@ -1406,6 +1519,8 @@ end
 function LogicTool:client_onDestroy()
 	if not self.cl or not self.tool:isLocal() then return end
 	self:cl_clearAllVisuals()
+	self:cl_setWireSource(nil)
+	self:cl_clearDebugFrames()
 	for _, e in ipairs({ self.cl.hover, self.cl.box }) do
 		if e and sm.exists(e) then e:destroy() end
 	end
@@ -1854,9 +1969,38 @@ function LogicTool:client_onEquippedUpdate(primary, secondary, forceBuild)
 		return true, true
 	end
 
+	if self.cl.logView then
+		-- browsing the log: the mouse buttons move through the entries
+		self.cl.hoverInter = nil
+		self.cl.press = nil
+		sm.gui.setInteractionText("", sm.gui.getKeyBinding("Create", true), "Older",
+			sm.gui.getKeyBinding("Attack", true), "Newer")
+		if primary == sm.tool.interactState.start then
+			self:cl_logStep(-1)
+		elseif secondary == sm.tool.interactState.start then
+			self:cl_logStep(1)
+		end
+		return true, true
+	end
+
 	local pos, shape, inter = self:cl_raycast()
 	local logicInter = inter and isLogicCapable(inter) and inter or nil
 	self.cl.hoverInter = logicInter
+
+	if CLICK_MODES[self.cl.clickMode] == "wire" and not forceBuild then
+		-- like the game's connect tool: left click picks the source, then wires
+		-- it to every part you click; right click drops the source
+		self.cl.press = nil
+		sm.gui.setInteractionText("", sm.gui.getKeyBinding("Create", true), self:cl_wireHint(logicInter),
+			sm.gui.getKeyBinding("Attack", true), self:cl_wireSource() and "Drop source" or "")
+		if primary == sm.tool.interactState.start then
+			self:cl_wireClick(logicInter)
+		elseif secondary == sm.tool.interactState.start and self:cl_wireSource() then
+			self:cl_setWireSource(nil)
+			sm.audio.play("ConnectTool - Released")
+		end
+		return true, true
+	end
 
 	local g = self.cl.active
 	local hint
@@ -1930,6 +2074,12 @@ function LogicTool:client_onEquippedUpdate(primary, secondary, forceBuild)
 end
 
 function LogicTool:client_onReload()
+	if self.cl.logView then
+		self:cl_stopLogView()
+		self:cl_refreshGui()
+		self.cl.gui:open()
+		return true
+	end
 	if self.cl.debug then
 		self:cl_stopDebug()
 		self:cl_refreshGui()
@@ -1947,6 +2097,10 @@ end
 
 -- Q: next box select mode (also while dragging, like the game's block drag)
 function LogicTool:client_onToggle()
+	if self.cl.logView then
+		self:cl_logUndoShown()
+		return true
+	end
 	self:cl_markDirty(1)
 	if self.cl.debug then
 		local d = self.cl.debug
@@ -2061,6 +2215,21 @@ function LogicTool:cl_connectMode(mode)
 end
 
 function LogicTool:cl_onOpsDone(r)
+	if r.undoneId then
+		for _, e in ipairs(self.cl.log) do if e.id == r.undoneId then e.undone = true end end
+	end
+	if r.entry then
+		r.entry.clientTick = nowTick()
+		self.cl.log[#self.cl.log + 1] = r.entry
+		if #self.cl.log > LOG_MAX then table.remove(self.cl.log, 1) end
+	end
+	if self.cl.leftWindow == "log" then self:cl_showLogList() end
+	if self.cl.logView then
+		-- browsing: stay on the entry just undone and show it as it is now
+		local lv = self.cl.logView
+		if r.entry and not r.undoneId then lv.pos = #self.cl.log end
+		self:cl_logFetch()
+	end
 	local parts = {}
 	if r.made > 0 then parts[#parts + 1] = r.made .. " connected" end
 	if r.cut > 0 then parts[#parts + 1] = r.cut .. " cut" end
@@ -2200,7 +2369,7 @@ local SCRIPTS_PATH = "$CONTENT_DATA/scripts.json"
 local SETTINGS_SPEC = {
 	enums = {
 		boxMode = BOX_MODES, pickMode = PICK_MODES, labelMode = LABEL_MODES, wireMode = WIRE_MODES,
-		lutStyle = LUT_STYLES, debugInputMode = DEBUG_INPUT_MODES, bulkMode = BULK_MODES,
+		lutStyle = LUT_STYLES, debugInputMode = DEBUG_INPUT_MODES, bulkMode = BULK_MODES, clickMode = CLICK_MODES,
 	},
 	bools = { "showLines", "lutCompress", "lutEven" },
 	texts = { debugSpeedText = 16, debugEveryText = 16, debugInputText = 64, bulkTimerText = 16, scriptNameText = LogicSettings.NAME_MAX, script = 100000 },
@@ -2992,7 +3161,7 @@ function LogicTool:cl_refreshGui()
 	for _, name in ipairs(GROUPS) do
 		parts[#parts + 1] = GROUP_HEX[name] .. name .. " #ffffff" .. #self.cl.groups[name]
 	end
-	gui:setText("groupInfo", table.concat(parts, "     "))
+	gui:setText("groupInfo", table.concat(parts, "   "))
 	-- group letter last and coloured, like "Active: A", so no colour reset is needed
 	gui:setText("chain", "Chain: " .. GROUP_HEX[g] .. g)
 	gui:setText("ring", "Ring: " .. GROUP_HEX[g] .. g)
@@ -3007,6 +3176,9 @@ function LogicTool:cl_refreshGui()
 	gui:setText("openSettingsText", left == "settings" and "Hide settings" or "< Settings")
 	gui:setText("openModuleText", left == "module" and "Hide module" or "< Module")
 	gui:setText("openDebugText", left == "debug" and "Hide debug" or "< Debug")
+	gui:setText("openLogText", left == "log" and "Hide log" or "< Log")
+	gui:setVisible("logWindow", left == "log")
+	if left == "log" then self:cl_showLogList() end
 	self:cl_syncDropDowns(gui)
 	gui:setText("buildLut", self.cl.lutPreview and "Apply build" or "Build LUT")
 	gui:setVisible("scriptWindow", left == "script")
@@ -3032,6 +3204,14 @@ local DROPDOWNS = {
 	{ name = "active", options = names(GROUPS, nil, "Active: "),
 		get = function(self) for i, g in ipairs(GROUPS) do if g == self.cl.active then return i end end return 1 end,
 		set = function(self, i) self.cl.active = GROUPS[i] end },
+	{ name = "clickMode", options = names(CLICK_MODES, CLICK_NAMES),
+		get = function(self) return self.cl.clickMode end,
+		set = function(self, i)
+			self.cl.clickMode = i
+			if CLICK_MODES[i] ~= "wire" then self:cl_setWireSource(nil) end
+			sm.gui.displayAlertText(CLICK_MODES[i] == "wire" and "Click a part to wire from, then the parts it feeds"
+				or "Clicks add parts to the active group", 2)
+		end },
 	{ name = "wireMode", options = names(WIRE_MODES, WIRE_NAMES),
 		get = function(self) return self.cl.wireMode end,
 		set = function(self, i)
@@ -3181,7 +3361,15 @@ function LogicTool:cl_onButton(name)
 		-- one window on the left at a time; the same button again hides it
 		local w = LEFT_WINDOWS[name]
 		self.cl.leftWindow = self.cl.leftWindow ~= w and w or nil
-	elseif name == "closeScript" or name == "closeSettings" or name == "closeModule" or name == "closeDebug" then
+	elseif name == "logView" then
+		self:cl_startLogView()
+	elseif name == "logClear" then
+		if self:cl_confirmed("logClear", "Press Clear log again to forget every entry") then
+			self.cl.log = {}
+			self.network:sendToServer("sv_logClear")
+			self:cl_showLogList()
+		end
+	elseif name == "closeScript" or name == "closeSettings" or name == "closeModule" or name == "closeDebug" or name == "closeLog" then
 		self.cl.leftWindow = nil
 	elseif name == "buildLut" then
 		self:cl_buildLut()
@@ -3264,6 +3452,7 @@ function LogicTool:cl_setDebugInfo(text)
 end
 
 function LogicTool:cl_startDebug()
+	self:cl_stopLogView()
 	local A, B = self:cl_inters("A"), self:cl_inters("B")
 	local err
 	if #A == 0 or #B == 0 then
@@ -3406,9 +3595,9 @@ end
 function LogicTool:cl_updateStepHud(equipped)
 	local gui = self.cl.stepGui
 	if not gui then return end
-	local want = self.cl.debug ~= nil and equipped
+	local want = (self.cl.debug ~= nil or self.cl.logView ~= nil) and equipped
 	if want and not gui:isActive() then
-		self:cl_showDebugHud()
+		if self.cl.logView then self:cl_showLogHud() else self:cl_showDebugHud() end
 		gui:open()
 	elseif not want and gui:isActive() then
 		gui:close()
@@ -3434,6 +3623,8 @@ function LogicTool:cl_rebuildMarkers()
 	for _, e in ipairs(self.cl.debugFrames) do
 		if sm.exists(e) and not e:isPlaying() then e:start() end
 	end
+	local src = self.cl.wireSource
+	if src and sm.exists(src.effect) and not src.effect:isPlaying() then src.effect:start() end
 end
 
 function LogicTool:cl_hideWorldVisuals()
@@ -3456,6 +3647,8 @@ function LogicTool:cl_hideWorldVisuals()
 	for _, e in ipairs(self.cl.debugFrames) do
 		if sm.exists(e) then e:stop() end
 	end
+	local src = self.cl.wireSource
+	if src and sm.exists(src.effect) then src.effect:stop() end
 end
 
 function LogicTool:cl_clearAllVisuals()
@@ -3540,7 +3733,33 @@ function LogicTool:cl_updateLines()
 		for _, c in ipairs(view.changed) do arrows(c.inter, c.on and COLOR_RISE or COLOR_FALL) end
 		for _, inter in ipairs(view.steady or {}) do arrows(inter, COLOR_STEADY) end
 	end
-	if self.cl.showLines and not view then
+	local lv = self.cl.logView and self.cl.logView.entry
+	if lv and not view then
+		-- browsing the log: this entry's wires, green added, red removed
+		for _, w in ipairs(lv.wires or {}) do
+			if n > MAX_LINES - 1 then break end
+			if sm.exists(w.p) and sm.exists(w.c) then
+				local from, to = w.p:getShape().worldPosition, w.c:getShape().worldPosition
+				if (to - from):length() < 0.05 then from = to + DEBUG_LOOP_RISE end
+				n = self:cl_connection(n, from, to, w.kind == "connect" and COLOR_RISE or COLOR_FALL)
+			end
+		end
+	end
+	local src = not view and not lv and self:cl_wireSource()
+	if src then
+		-- Click: Wire: what the source feeds now
+		local from = src:getShape().worldPosition
+		for _, c in ipairs(src:getChildren(LOGIC)) do
+			if n > MAX_LINES - 1 then break end
+			local cs = c:getShape()
+			if cs and sm.exists(cs) then
+				local start = from
+				if (cs.worldPosition - from):length() < 0.05 then start = cs.worldPosition + DEBUG_LOOP_RISE end
+				n = self:cl_connection(n, start, cs.worldPosition, src:isActive() and COLOR_ON or COLOR_OFF)
+			end
+		end
+	end
+	if self.cl.showLines and not view and not lv then
 		local done = {}
 		local function draw(p, c)
 			if n > MAX_LINES - 1 then return end
@@ -3780,4 +3999,173 @@ function LogicTool:client_onUpdate(dt)
 
 	self:cl_updateLines()
 	self:cl_updateLabels(dt)
+end
+
+---------------------------------------------------------------------------
+-- CLIENT: Click: Wire (the game's connect tool, but logged)
+---------------------------------------------------------------------------
+
+function LogicTool:cl_setWireSource(inter)
+	local s = self.cl.wireSource
+	if s and sm.exists(s.effect) then s.effect:destroy() end
+	self.cl.wireSource = nil
+	if not (inter and sm.exists(inter)) then return end
+	local e = sm.effect.createEffect("ShapeRenderable", inter)
+	e:setParameter("uuid", FRAME_UUID)
+	e:setParameter("color", COLOR_SOURCE)
+	e:setScale(frameScale(inter:getShape(), FLAG_PAD))
+	if self.tool:isEquipped() then e:start() end
+	self.cl.wireSource = { inter = inter, effect = e }
+end
+
+function LogicTool:cl_wireSource()
+	local s = self.cl.wireSource
+	if s and sm.exists(s.inter) then return s.inter end
+	if s then self:cl_setWireSource(nil) end
+end
+
+-- Left click in Wire mode: pick the source, or wire the source to this part
+-- (connect, or cut if they already are, like the game's connect tool).
+function LogicTool:cl_wireClick(inter)
+	local src = self:cl_wireSource()
+	if not inter then return end
+	if not src then
+		self:cl_setWireSource(inter)
+		sm.audio.play("ConnectTool - Selected")
+	elseif src == inter then
+		self:cl_setWireSource(nil)
+		sm.audio.play("ConnectTool - Released")
+	else
+		self:cl_sendOps({ { kind = "flip", p = src, c = inter } }, "Wire")
+	end
+end
+
+function LogicTool:cl_wireHint(inter)
+	local src = self:cl_wireSource()
+	if not inter then
+		return src and "Click a part to wire the source to" or "Click a part to wire from"
+	end
+	if not src then return "Wire from this part" end
+	if src == inter then return "Drop the source" end
+	return containsInter(src:getChildren(LOGIC), inter) and "#ff6060Cut#ffffff source > this" or "Connect source > this"
+end
+
+---------------------------------------------------------------------------
+-- CLIENT: wiring log
+---------------------------------------------------------------------------
+
+local function logLine(e, now)
+	local parts = {}
+	if (e.made or 0) > 0 then parts[#parts + 1] = "#40ff60" .. e.made .. " connected#ffffff" end
+	if (e.cut or 0) > 0 then parts[#parts + 1] = "#ff6060" .. e.cut .. " cut#ffffff" end
+	local ago = (now and e.clientTick) and ("  #909090" .. agoText(now - e.clientTick) .. "#ffffff") or ""
+	return string.format("#%d  %s  %s%s%s", e.id, e.label, table.concat(parts, ", "), ago,
+		e.undone and "  #909090(undone)#ffffff" or "")
+end
+
+function LogicTool:cl_showLogList()
+	if not self.cl.gui then return end
+	local lines = {}
+	local now = nowTick()
+	for i = #self.cl.log, 1, -1 do lines[#lines + 1] = logLine(self.cl.log[i], now) end
+	local text = #lines > 0 and (#lines .. " entr" .. (#lines == 1 and "y" or "ies") .. ", newest first:\n\n" .. table.concat(lines, "\n"))
+		or ("Nothing logged yet.\n\n" .. LOG_HINT)
+	if text ~= self.cl.logText then
+		self.cl.logText = text
+		self.cl.gui:setText("logList", text)
+	end
+end
+
+function LogicTool:cl_startLogView()
+	if #self.cl.log == 0 then sm.gui.displayAlertText("The log is empty", 2) return end
+	if self.cl.debug then sm.gui.displayAlertText("Stop the debugger first", 2) return end
+	self:cl_setWireSource(nil)
+	self.cl.logView = { pos = #self.cl.log, pending = false }
+	if self.cl.gui:isActive() then self.cl.gui:close() end
+	sm.gui.displayAlertText("Log: left click = older, right click = newer, Q = undo this, R = stop", 4)
+	self:cl_logFetch()
+end
+
+function LogicTool:cl_logFetch()
+	local lv = self.cl.logView
+	local e = lv and self.cl.log[lv.pos]
+	if not e then return end
+	lv.pending = true
+	self.network:sendToServer("sv_logShow", { id = e.id })
+end
+
+function LogicTool:cl_logStep(dir)
+	local lv = self.cl.logView
+	if not lv then return end
+	local pos = lv.pos + dir
+	if pos < 1 then sm.gui.displayAlertText("Oldest entry", 1) return end
+	if pos > #self.cl.log then sm.gui.displayAlertText("Newest entry", 1) return end
+	lv.pos = pos
+	lv.entry = nil
+	self:cl_clearDebugFrames()
+	self:cl_showLogHud()
+	self:cl_logFetch()
+end
+
+function LogicTool:cl_logUndoShown()
+	local lv = self.cl.logView
+	local e = lv and self.cl.log[lv.pos]
+	if not e then return end
+	if e.undone then sm.gui.displayAlertText("Already undone (the undo is its own entry: undo that to redo)", 2.5) return end
+	self.network:sendToServer("sv_logUndo", { id = e.id })
+end
+
+function LogicTool:cl_stopLogView()
+	if not self.cl.logView then return end
+	self.cl.logView = nil
+	self:cl_clearDebugFrames()
+	if self.cl.stepGui and self.cl.stepGui:isActive() then self.cl.stepGui:close() end
+end
+
+function LogicTool:cl_onLogEntry(r)
+	local lv = self.cl.logView
+	local e = lv and self.cl.log[lv.pos]
+	if not (e and e.id == r.id) then return end -- moved on meanwhile
+	lv.pending = false
+	lv.entry = r
+	-- cubes on both ends of every wire
+	self:cl_clearDebugFrames()
+	local show = self.tool:isEquipped()
+	local framed = {}
+	for _, w in ipairs(r.wires or {}) do
+		for _, inter in ipairs({ w.p, w.c }) do
+			if #self.cl.debugFrames < DEBUG_MAX_FRAMES and not framed[inter.id] and sm.exists(inter) then
+				framed[inter.id] = true
+				local f = sm.effect.createEffect("ShapeRenderable", inter)
+				f:setParameter("uuid", FRAME_UUID)
+				f:setParameter("color", w.kind == "connect" and COLOR_RISE or COLOR_FALL)
+				f:setScale(frameScale(inter:getShape(), FLAG_PAD))
+				if show then f:start() end
+				self.cl.debugFrames[#self.cl.debugFrames + 1] = f
+			end
+		end
+	end
+	self:cl_showLogHud()
+end
+
+function LogicTool:cl_showLogHud()
+	local gui, lv = self.cl.stepGui, self.cl.logView
+	if not (gui and lv) then return end
+	local e = self.cl.log[lv.pos]
+	if not e then return end
+	gui:setText("stepTick", string.format("Log %d / %d   #a0a0a0#%d", lv.pos, #self.cl.log, e.id))
+	gui:setText("stepOutputs", logLine(e, nowTick()))
+	local r = lv.entry
+	local info
+	if not r then
+		info = "Loading..."
+	elseif r.missing then
+		info = "#ff6060This entry is no longer kept#ffffff"
+	else
+		info = string.format("%d wire(s)", r.total)
+		if r.gone > 0 then info = info .. string.format("   #ffcc40%d gone (parts removed or rebuilt)#ffffff", r.gone) end
+		if r.total - r.gone > #r.wires then info = info .. string.format("   showing %d", #r.wires) end
+	end
+	gui:setText("stepInfo", info)
+	gui:setText("stepKeys", "Left click older   Right click newer   Q undo this   R stop")
 end
