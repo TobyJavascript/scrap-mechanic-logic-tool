@@ -1163,9 +1163,9 @@ function LogicScript.run(src, groups)
 		fail(what .. " needs a part or a list of parts, got " .. (v == nil and "nil" or ("a " .. type(v))))
 	end
 
-	local function emit(kind, p, c)
+	local function emit(kind, p, c, allowSelf)
 		local pn, cn = partNode[p], c and partNode[c]
-		if c and pn == cn then return end -- no self connections
+		if c and pn == cn and not allowSelf then return end -- only selfWire wires a part to itself
 		local key = kind .. "|" .. tostring(pn.key) .. "|" .. tostring(cn and cn.key)
 		if seen[key] then return end
 		if #ops >= MAX_OPS then fail("too many operations (max " .. MAX_OPS .. ")") end
@@ -1197,6 +1197,15 @@ function LogicScript.run(src, groups)
 	env.chain = function(list)
 		local l = parts(list, "chain")
 		for i = 1, #l - 1 do emit("connect", l[i], l[i + 1]) end
+	end
+	env.ring = function(list)
+		local l = parts(list, "ring")
+		if #l < 3 then fail("ring needs 3 or more parts (2 would be a two-way wire), got " .. #l) end
+		for i = 1, #l - 1 do emit("connect", l[i], l[i + 1]) end
+		emit("connect", l[#l], l[1])
+	end
+	env.selfWire = function(x)
+		for _, p in ipairs(parts(x, "selfWire")) do emit("connect", p, p, true) end
 	end
 	env.clearInputs = function(x) for _, p in ipairs(parts(x, "clearInputs")) do emit("clearIn", p) end end
 	env.clearOutputs = function(x) for _, p in ipairs(parts(x, "clearOutputs")) do emit("clearOut", p) end end
@@ -1325,7 +1334,7 @@ LogicScript.THEME = {
 	A = "#ff9900", B = "#00c8ff", C = "#d040ff",
 }
 local API_NAMES = {}
-for w in ("connect cut flip chain clearInputs clearOutputs sort reverse slice filter join getbit print"):gmatch("%S+") do
+for w in ("connect cut flip chain ring selfWire clearInputs clearOutputs sort reverse slice filter join getbit print"):gmatch("%S+") do
 	API_NAMES[w] = true
 end
 local LIB_NAMES = {}

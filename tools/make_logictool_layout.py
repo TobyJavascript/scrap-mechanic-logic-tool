@@ -59,6 +59,36 @@ def button(x, y, w, h, caption, name, skin="PrimaryButton", colour=None):
 # Buttons that stand out from the yellow ones (game styles)
 CLOSE_SKIN = "SecondaryButton"          # dark with a white outline, like the game's Cancel/Back
 RUN_SKIN = "SchematicbotButtonGreen"    # green: the script window's main action
+SETTING_SKIN = "SchematicbotButtonBlue" # blue outline: buttons that cycle a mode instead of doing something
+
+
+def overlay_caption(btn, skin, caption, name=None):
+    """These game styles have no text of their own; like the game's dressbot
+    menu, put a text box on top that lets clicks through to the button. Give
+    it a name to change the caption from Lua."""
+    btn.skin = skin
+    btn.props = []
+    btn.children.append(W("TextBox", "TextBox", 0, 0, 1, 1, name, [
+        ("Caption", caption), ("FontName", "SM_ButtonTiny"), ("TextAlign", "Center"),
+        ("TextColour", "1 1 1"), ("NeedMouse", "false"), ("NeedKey", "false"),
+    ]))
+    return btn
+
+
+def blue(btn):
+    """A blue button: its caption is the text box <name>Text."""
+    caption = dict(btn.props).get("Caption", "")
+    return overlay_caption(btn, SETTING_SKIN, caption, btn.name + "Text")
+
+
+def dropdown(x, y, w, h, name):
+    """An empty spot the game fills with its dropdown (createDropDown in Lua)."""
+    return W("Widget", "PanelEmpty", x, y, w, h, name)
+
+
+def as_dropdown(btn):
+    """The same place as a button from button_row, as a dropdown."""
+    return dropdown(*btn.pos, btn.name)
 
 
 def button_row(y, items):
@@ -101,14 +131,14 @@ def main_layout():
     kids.append(button(1 - PAD - 0.2, y + 0.005, 0.2, 0.035, "Close", "close", skin=CLOSE_SKIN))
     y += 0.055
     # windows that open on the left (one at a time)
-    kids += button_row(y, [("openScript", "< Script"), ("openSettings", "< Settings"), ("openModule", "< Module"),
-                           ("openDebug", "< Debug")])
+    kids += [blue(b) for b in button_row(y, [("openScript", "< Script"), ("openModule", "< Module"),
+                                             ("openDebug", "< Debug"), ("openSettings", "< Settings")])]
     y += ROW_H + GAP + 0.005
 
     # Groups
     kids.append(section(y, "GROUPS"))
     y += 0.032
-    kids.append(button(PAD, y, 0.28, ROW_H, "Active: A", "active"))
+    kids.append(dropdown(PAD, y, 0.28, ROW_H, "active"))
     kids.append(text(PAD + 0.30, y, 1 - 2 * PAD - 0.30, ROW_H, "A 0   B 0   C 0", name="groupInfo", align="Left VCenter"))
     y += ROW_H + GAP
     kids += button_row(y, [("clearActive", "Clear group"), ("clearAll", "Clear all groups")])
@@ -119,13 +149,30 @@ def main_layout():
     # Connect
     kids.append(section(y, "CONNECT   A  >  B"))
     y += 0.032
-    kids += button_row(y, [("allToAll", "All > All"), ("zip", "Zip 1:1"), ("chain", "Chain: A"), ("undo", "Undo")])
+    row = button_row(y, [("wireMode", "Mode: Connect"), ("allToAll", "All > All"), ("zip", "Zip 1:1"), ("undo", "Undo")])
+    row[0] = as_dropdown(row[0])
+    kids += row
     y += ROW_H + GAP
-    kids += button_row(y, [("wireMode", "Mode: Connect"), ("clearIn", "Clear inputs: A"), ("clearOut", "Clear outputs: A")])
+    kids += button_row(y, [("chain", "Chain: A"), ("ring", "Ring: A"), ("selfWire", "Self: A")])
+    y += ROW_H + GAP
+    kids += button_row(y, [("clearIn", "Clear inputs: A"), ("clearOut", "Clear outputs: A")])
+    y += ROW_H + GAP + 0.005
+
+    # Bulk edit (rebuilds the creation, like Build LUT)
+    kids.append(section(y, "EDIT   active group"))
+    y += 0.032
+    row = button_row(y, [("bulkMode", "Gate: XOR"), ("setGates", "Set gates: A")])
+    row[0] = as_dropdown(row[0])
+    kids += row
+    y += ROW_H + GAP
+    half = (1 - 2 * PAD - 0.012) / 2
+    kids.append(text(PAD, y, 0.14, ROW_H, "Timer", font="SM_TextLabel"))
+    kids.append(line_edit(PAD + 0.14, y, half - 0.14, ROW_H, "bulkTimer"))
+    kids.append(button(PAD + half + 0.012, y, half, ROW_H, "Set timers: A", "setTimers"))
     y += ROW_H + GAP + 0.005
 
     # Results
-    kids.append(section(y, "RESULT"))
+    kids.append(section(y, "STANDARD OUTPUT"))
     y += 0.032
     result_h = 1 - y - 0.02
     kids.append(edit_box(PAD, y, 1 - 2 * PAD, result_h, "result", read_only=True,
@@ -187,7 +234,7 @@ def module_window():
 
 def settings_window():
     """Tool settings (left, hidden until opened). One row per setting:
-    name on the left, a button that cycles the value on the right, and a
+    name on the left, a dropdown with the value on the right, and a
     short explanation under it."""
     st = []
     y = 0.015
@@ -206,7 +253,7 @@ def settings_window():
     split = 0.45
     for name, label, value, desc in rows:
         st.append(text(PAD, y, split - PAD, ROW_H, label, font="SM_TextLabel"))
-        st.append(button(split, y, 1 - PAD - split, ROW_H, value, name))
+        st.append(dropdown(split, y, 1 - PAD - split, ROW_H, name))
         y += ROW_H + 0.004
         # read-only EditBox: unlike TextBox it wraps long lines (same as the result box)
         st.append(W("EditBox", "EditBoxStretch", PAD, y, 1 - 2 * PAD, 0.05, None, [
@@ -238,7 +285,7 @@ def debug_window():
     dk.append(button(1 - PAD - 0.2, y + 0.005, 0.2, 0.035, "Hide", "closeDebug", skin=CLOSE_SKIN))
     y += 0.055
 
-    dk.append(section(y, "ANALYSE   (results on the right)"))
+    dk.append(section(y, "ANALYSE   (output on the right)"))
     y += 0.032
     dk += button_row(y, [("timing", "Timing A > B"), ("truth", "Truth table"), ("lint", "Check creation")])
     y += ROW_H + GAP
@@ -253,17 +300,19 @@ def debug_window():
     dk.append(button(split + 0.4, y, 1 - PAD - split - 0.4, ROW_H, "From game", "debugFromGame"))
     y += ROW_H + GAP
     dk.append(text(PAD, y, split - PAD, ROW_H, "Run speed", font="SM_TextLabel"))
-    dk.append(button(split, y, 1 - PAD - split, ROW_H, "1 s per tick", "debugSpeed"))
+    dk.append(line_edit(split, y, 0.2, ROW_H, "debugSpeed"))
+    dk.append(text(split + 0.22, y, 1 - PAD - split - 0.22, ROW_H, "seconds per tick (Q runs)", font="SM_TextSmall",
+                   colour="0.7 0.7 0.7"))
     y += ROW_H + GAP
     dk.append(text(PAD, y, split - PAD, ROW_H, "Input mode", font="SM_TextLabel"))
-    dk.append(button(split, y, 1 - PAD - split, ROW_H, "Held", "debugHold"))
+    dk.append(dropdown(split, y, 1 - PAD - split, ROW_H, "debugHold"))
     y += ROW_H + GAP
     dk.append(text(PAD, y, split - PAD, ROW_H, "Pulse every", font="SM_TextLabel"))
     dk.append(line_edit(split, y, 0.2, ROW_H, "debugEvery"))
     dk.append(text(split + 0.22, y, 1 - PAD - split - 0.22, ROW_H, "ticks (Pulse every mode)", font="SM_TextSmall",
                    colour="0.7 0.7 0.7"))
     y += ROW_H + GAP
-    dk += button_row(y, [("debugStart", "Start debug")])
+    dk += [overlay_caption(b, RUN_SKIN, "Start debug") for b in button_row(y, [("debugStart", "Start debug")])]
     y += ROW_H + GAP + 0.005
     dk.append(edit_box(PAD, y, 1 - 2 * PAD, 1 - y - 0.02, "debugInfo", read_only=True))
     return W("Widget", "HudBackgroundLarge", 0.02, 0.06, 0.36, 0.88, "debugWindow",

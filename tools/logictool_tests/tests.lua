@@ -74,6 +74,22 @@ do
 	check("chain", ok and opsString(res) == "connect a1>a2, connect a2>a3, connect a3>a4", ok and opsString(res) or res)
 	local ok2, res2 = run("chain(slice(A, 2, -1))", { A = A })
 	check("chain slice", ok2 and opsString(res2) == "connect a2>a3, connect a3>a4", ok2 and opsString(res2) or res2)
+	local ok3, res3 = run("ring(A)", { A = A })
+	check("ring", ok3 and opsString(res3) == "connect a1>a2, connect a2>a3, connect a3>a4, connect a4>a1", ok3 and opsString(res3) or res3)
+	local ok4, res4 = run("ring(slice(A, 1, 2))", { A = A })
+	check("ring of 2 refused", not ok4 and tostring(res4):find("3 or more", 1, true), tostring(res4))
+	local ok5, res5 = run("selfWire(A)\nconnect(A[1], A[1])", { A = A })
+	check("selfWire (connect still skips self)", ok5 and opsString(res5) == "connect a1>a1, connect a2>a2, connect a3>a3, connect a4>a4", ok5 and opsString(res5) or res5)
+end
+
+do
+	local function pt(s) local a, b = LogicGraph.parseTimer(s) return tostring(a) .. "/" .. tostring(b) end
+	check("timer 5", pt("5") == "0/5" and pt("5t") == "0/5" and pt(" 5 T ") == "0/5", pt("5"))
+	check("timer 2s", pt("2s") == "2/0", pt("2s"))
+	check("timer 1s 5t", pt("1s 5t") == "1/5" and pt("1s5t") == "1/5" and pt("1s5") == "1/5", pt("1s 5t"))
+	check("timer carries", pt("45") == "1/5" and pt("0s 40t") == "1/0", pt("45"))
+	check("timer max", pt("59s 39t") == "59/39" and LogicGraph.parseTimer("60s") == nil, pt("60s"))
+	check("timer bad", LogicGraph.parseTimer("") == nil and LogicGraph.parseTimer("abc") == nil and LogicGraph.parseTimer("1.5s") == nil)
 end
 
 do

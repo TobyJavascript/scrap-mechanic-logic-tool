@@ -21,6 +21,32 @@ function LogicGraph.timerDelay(seconds, ticks)
 	return 1 + (seconds or 0) * LogicGraph.TICKS_PER_SECOND + (ticks or 0)
 end
 
+-- A timer's settings as the game's timer menu allows them
+LogicGraph.TIMER_SECONDS_MAX = 59
+LogicGraph.TIMER_TICKS_MAX = 40
+
+-- "5" or "5t" (ticks), "2s", "1s 5t", "1s5t" -> seconds, ticks. More than
+-- 40 ticks carry into seconds. Returns nil and why when it can't be set.
+function LogicGraph.parseTimer(text)
+	local s = tostring(text or ""):lower():gsub("%s+", "")
+	if s == "" then return nil, "Type a timer setting first, like 5t or 1s 5t" end
+	local seconds, ticks
+	local a, b = s:match("^(%d+)s(%d+)t?$")
+	if a then
+		seconds, ticks = tonumber(a), tonumber(b)
+	else
+		local n, unit = s:match("^(%d+)([st]?)$")
+		if not n then return nil, "Timer: write ticks (5 or 5t), seconds (2s) or both (1s 5t)" end
+		if unit == "s" then seconds, ticks = tonumber(n), 0 else seconds, ticks = 0, tonumber(n) end
+	end
+	local total = seconds * LogicGraph.TICKS_PER_SECOND + ticks
+	seconds, ticks = math.floor(total / LogicGraph.TICKS_PER_SECOND), total % LogicGraph.TICKS_PER_SECOND
+	if seconds > LogicGraph.TIMER_SECONDS_MAX then
+		return nil, "Timer: the game allows at most " .. LogicGraph.TIMER_SECONDS_MAX .. "s " .. LogicGraph.TIMER_TICKS_MAX .. "t"
+	end
+	return seconds, ticks
+end
+
 function LogicGraph.formatTicks(t)
 	if t == nil then return "-" end
 	return string.format("%d tick%s (%.3fs)", t, t == 1 and "" or "s", t / LogicGraph.TICKS_PER_SECOND)

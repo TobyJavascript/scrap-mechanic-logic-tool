@@ -64,6 +64,7 @@ function Inter:connect(c)
 	assert(SERVER, "connect called on client")
 	for _, x in ipairs(self.children) do if x == c then return false end end
 	if c.inType == 0 then return false end
+	for _, x in ipairs(c.children) do if x == self and c ~= self then return false end end -- no two-way wires
 	self.children[#self.children + 1] = c
 	c.parents[#c.parents + 1] = self
 	return true
@@ -176,6 +177,20 @@ end
 function Gui:setButtonCallback(name, cb) self.buttons[name] = cb end
 function Gui:setTextChangedCallback(name, cb) self.textCbs[name] = cb end
 function Gui:setText(name, text) assert(type(text) == "string", "setText needs a string for " .. name) self.texts[name] = text end
+-- dropdowns: the chosen option is kept in texts[name], like a caption
+function Gui:createDropDown(name, cb, options)
+	assert(type(cb) == "string" and type(options) == "table" and #options > 0)
+	assert(not self.dropdowns[name], "dropdown created twice: " .. name)
+	self.dropdowns[name] = { cb = cb, options = options }
+end
+function Gui:setSelectedDropDownItem(name, value)
+	local dd = self.dropdowns[name]
+	assert(dd, "no dropdown " .. name)
+	local ok = false
+	for _, o in ipairs(dd.options) do if o == value then ok = true end end
+	assert(ok, "not an option of " .. name .. ": " .. tostring(value))
+	self.texts[name] = value
+end
 function Gui:open() self.active = true end
 function Gui:close() self.active = false end
 function Gui:isActive() return self.active end
@@ -184,7 +199,7 @@ function Gui:setVisible(name, v) assert(type(v) == "boolean") self.visible[name]
 function Gui:setWorldPosition() end
 function Gui:setRequireLineOfSight() end
 function Gui:setMaxRenderDistance() end
-local function newGui() return setmetatable({ buttons = {}, textCbs = {}, texts = {}, visible = {}, active = false }, Gui) end
+local function newGui() return setmetatable({ buttons = {}, textCbs = {}, texts = {}, visible = {}, dropdowns = {}, active = false }, Gui) end
 
 local raycast = { hit = false }
 JSON_STORE, IMPORTS = {}, {}
@@ -520,6 +535,7 @@ check("A outputs kept", #switch1.children == 4, #switch1.children)
 check("caption follows active", tool.cl.gui.texts.clearIn == "Clear inputs: #ff9900A", tool.cl.gui.texts.clearIn)
 step("chain B caption", function() tool.cl.active = "B" tool:cl_refreshGui() end)
 check("chain caption follows active", tool.cl.gui.texts.chain == "Chain: #00c8ffB", tool.cl.gui.texts.chain)
+check("ring/self captions follow active", tool.cl.gui.texts.ring == "Ring: #00c8ffB" and tool.cl.gui.texts.selfWire == "Self: #00c8ffB")
 step("restore active A", function() tool.cl.active = "A" tool:cl_refreshGui() end)
 step("tidy", function() press("clearOut") end)
 step("sort/reverse", function() press("sortY") press("sortZ") press("reverse") press("reverse") press("sortX") press("active") end)
@@ -555,15 +571,15 @@ end)
 check("not recoloured", tool.cl.gui.texts.script == nil)
 check("script window hidden at start", tool.cl.gui.visible.scriptWindow == false)
 step("open script window", function() press("openScript") end)
-check("script window shown", tool.cl.gui.visible.scriptWindow == true and tool.cl.gui.texts.openScript == "Hide script")
+check("script window shown", tool.cl.gui.visible.scriptWindow == true and tool.cl.gui.texts.openScriptText == "Hide script")
 step("hide script window", function() press("closeScript") end)
 check("script window hidden", tool.cl.gui.visible.scriptWindow == false)
 check("settings hidden at start", tool.cl.gui.visible.settingsWindow == false)
 step("script then settings", function() press("openScript") press("openSettings") end)
 check("settings replaces script", tool.cl.gui.visible.settingsWindow == true and tool.cl.gui.visible.scriptWindow == false
-	and tool.cl.gui.texts.openSettings == "Hide settings" and tool.cl.gui.texts.openScript == "< Script")
+	and tool.cl.gui.texts.openSettingsText == "Hide settings" and tool.cl.gui.texts.openScriptText == "< Script")
 step("settings button again hides", function() press("openSettings") end)
-check("settings hidden", tool.cl.gui.visible.settingsWindow == false and tool.cl.gui.texts.openSettings == "< Settings")
+check("settings hidden", tool.cl.gui.visible.settingsWindow == false and tool.cl.gui.texts.openSettingsText == "< Settings")
 step("settings then script", function() press("openSettings") press("openScript") end)
 check("script replaces settings", tool.cl.gui.visible.scriptWindow == true and tool.cl.gui.visible.settingsWindow == false)
 step("hide settings button", function() press("openSettings") press("closeSettings") end)
@@ -712,8 +728,20 @@ check("LUT style starts on Auto", tool.cl.gui.texts.lutStyle == "Auto", tool.cl.
 step("LUT style: ROM for the next tests", function() press("lutStyle") end)
 check("LUT style ROM", tool.cl.gui.texts.lutStyle == "ROM", tool.cl.gui.texts.lutStyle)
 check("module window shown", tool.cl.gui.visible.moduleWindow == true and tool.cl.gui.visible.scriptWindow == false
-	and tool.cl.gui.texts.openModule == "Hide module")
+	and tool.cl.gui.texts.openModuleText == "Hide module")
 check("module hint", moduleText():find("press Load", 1, true), moduleText())
+step("ring A over 4 gates", function() setGroup("A", { gates[1], gates[2], gates[3], gates[4] }) tool.cl.active = "A" press("ring") end)
+check("ring closes the loop", result():find("Connect Ring A: 4 connected", 1, true)
+	and gates[4].children[#gates[4].children] == gates[1], result())
+local wiresBefore
+step("ring of 2 is refused", function() wiresBefore = #gates[2].children setGroup("A", { gates[1], gates[2] }) press("ring") end)
+check("ring of 2: no new wires", #gates[2].children == wiresBefore, #gates[2].children)
+local selfBefore
+step("self A", function() selfBefore = #gates[3].children setGroup("A", { gates[1], gates[2], gates[3] }) press("selfWire") end)
+check("self wires each part to itself", result():find("Connect Self A: 3 connected", 1, true)
+	and gates[3].children[#gates[3].children] == gates[3], result())
+step("undo self", function() press("undo") end)
+check("undo self", #gates[3].children == selfBefore, #gates[3].children)
 step("module wiring: switch1 > gate3 (OR) > gate4 (AND), switch2 > gate4", function()
 	SERVER = true
 	for _, g in ipairs(gates) do
@@ -918,8 +946,11 @@ step("debug setup", function()
 	tool:cl_add("B", out, out.shape)
 end)
 step("debug window", function() press("openDebug") end)
-check("debug window shown", tool.cl.gui.visible.debugWindow == true and tool.cl.gui.texts.openDebug == "Hide debug")
-check("debug speed default", tool.cl.gui.texts.debugSpeed == "1 s per tick", tool.cl.gui.texts.debugSpeed)
+check("debug window shown", tool.cl.gui.visible.debugWindow == true and tool.cl.gui.texts.openDebugText == "Hide debug")
+check("debug speed default", tool.cl.gui.texts.debugSpeed == "1" and tool.cl.gui.texts.debugHold == "Constant input", tool.cl.gui.texts.debugSpeed)
+step("debug: bad run speed refused", function() tool:cl_onDebugSpeedChanged(nil, "fast") tool:cl_onDebugInputsChanged(nil, "1") press("debugStart") end)
+check("bad run speed refused", tool.cl.debug == nil and tool.cl.gui.texts.debugInfo:find("Run speed", 1, true), tool.cl.gui.texts.debugInfo)
+step("debug: run speed back to 1", function() tool:cl_onDebugSpeedChanged(nil, "1") end)
 step("debug from game", function() press("debugFromGame") end)
 check("from game = 0", tool.cl.gui.texts.debugInputs == "0", tool.cl.gui.texts.debugInputs)
 step("debug bad inputs", function() tool:cl_onDebugInputsChanged(nil, "12") press("debugStart") end)
@@ -1009,7 +1040,7 @@ step("debug stop again", function() tool:client_onReload() tool.cl.gui:close() p
 -- settings are saved a moment after a change, and come back in a new session
 step("settings: change some", function()
 	press("lutCompress")             -- Stacked
-	press("debugSpeed")              -- 2 s
+	tool:cl_onDebugSpeedChanged(nil, "0,5")
 	press("labels")                  -- Order > Type
 	tool:client_onToggle()           -- box mode XY ... (next)
 	tool:cl_onDebugInputsChanged(nil, "101")
@@ -1021,7 +1052,7 @@ step("settings: a moment later", function()
 	tool:client_onUpdate(1.1)
 end)
 local saved = FILES["$CONTENT_DATA/settings.json"]
-check("settings: saved", saved and saved.lutCompress == true and saved.debugSpeed == 2 and saved.labelMode == "type"
+check("settings: saved", saved and saved.lutCompress == true and saved.debugSpeedText == "0,5" and saved.labelMode == "type"
 	and saved.boxMode == BOX_NAME_OF(boxWas) and saved.debugInputText == "101" and saved.script == "chain(A)" and saved.version == 1)
 step("settings: new session", function()
 	local t2 = setmetatable({}, { __index = LogicTool })
@@ -1030,7 +1061,7 @@ step("settings: new session", function()
 	t2:client_onCreate()
 	NEW_TOOL = t2
 end)
-check("settings: restored", NEW_TOOL and NEW_TOOL.cl.lutCompress == true and NEW_TOOL.cl.debugSpeed == 5
+check("settings: restored", NEW_TOOL and NEW_TOOL.cl.lutCompress == true and NEW_TOOL.cl.debugSpeedText == "0,5" and NEW_TOOL.cl.gui.texts.debugSpeed == "0,5"
 	and NEW_TOOL.cl.boxMode == boxWas and NEW_TOOL.cl.debugInputText == "101" and NEW_TOOL.cl.gui.texts.debugInputs == "101"
 	and NEW_TOOL.cl.script == "chain(A)" and #NEW_TOOL.cl.library == 1 and NEW_TOOL.cl.libPos == 1
 	and NEW_TOOL.cl.gui.texts.lutCompress == "Stacked")
@@ -1042,7 +1073,7 @@ step("settings: a broken file falls back to defaults", function()
 	t3:client_onCreate()
 	NEW_TOOL = t3
 end)
-check("settings: defaults after a broken file", NEW_TOOL.cl.lutCompress == false and NEW_TOOL.cl.debugSpeed == 4
+check("settings: defaults after a broken file", NEW_TOOL.cl.lutCompress == false and NEW_TOOL.cl.debugSpeedText == "1"
 	and chats[#chats]:find("using defaults", 1, true), chats[#chats])
 step("settings: read-only folder warns once", function()
 	FILES.readOnly = true
@@ -1058,6 +1089,57 @@ check("settings: one warning", (function()
 	return n == 1
 end)())
 step("settings: other sessions closed", function() NEW_TOOL:client_onDestroy() NEW_TOOL = nil end)
+
+-- bulk edit: set gate modes / timer delays of the active group
+step("bulk setup", function()
+	tool.cl.gui:open()
+	for _, g in ipairs({ "A", "B", "C" }) do tool:cl_clearGroup(g) end
+	local nb = setmetatable({ id = newId(), worldPosition = vec(0, 0, 0), worldRotation = quat(), shapes = {} }, Body)
+	nb.creation = { nb }
+	local g1 = addPart(UUID_GATE, 20, 0, 0, { mode = 0 }, nil, nb)
+	local g2 = addPart(UUID_GATE, 20, 1, 0, { mode = 2 }, nil, nb)
+	local t1 = addPart(UUID_TIMER, 20, 2, 0, { seconds = 0, ticks = 1 }, nil, nb)
+	local sw = addPart(UUID_SWITCH, 20, 3, 0, nil, nil, nb)
+	SERVER = true sw:connect(g1) g1:connect(t1) SERVER = false
+	DBG = { g1 = g1, g2 = g2, t1 = t1, sw = sw, body = nb, imports = #IMPORTS }
+	for _, p in ipairs({ g1, g2, t1, sw }) do tool:cl_add("A", p, p.shape) end
+	tool:cl_add("B", t1, t1.shape)
+	tool.cl.active = "A"
+	tool:cl_refreshGui()
+end)
+check("bulk captions", tool.cl.gui.texts.bulkMode == "Gate: XOR" and tool.cl.gui.texts.setGates == "Set gates: #ff9900A"
+	and tool.cl.gui.texts.setTimers == "Set timers: #ff9900A"
+	and tool.cl.gui.texts.active == "Active: A" and tool.cl.gui.texts.wireMode == "Mode: Connect", tool.cl.gui.texts.bulkMode)
+step("dropdown: pick Mode: Cut, then Active: C", function() tool:cl_dd_wireMode("Mode: Cut") tool:cl_dd_active("Active: C") end)
+check("dropdown sets the value", tool.cl.wireMode == 2 and tool.cl.active == "C" and tool.cl.gui.texts.setGates == "Set gates: #d040ffC")
+step("dropdown: right click moves the active dropdown too", function()
+	tool:cl_dd_wireMode("Mode: Connect")
+	tool:client_onEquippedUpdate(S.null, S.start, false) tool:client_onEquippedUpdate(S.null, S.stop, false)
+end)
+check("dropdown follows hotkey", tool.cl.active == "A" and tool.cl.gui.texts.active == "Active: A", tool.cl.active)
+step("dropdown: same value again is a no-op, unknown ignored", function() tool:cl_dd_bulkMode("Gate: XOR") tool:cl_dd_bulkMode("nope") end)
+check("dropdown no-op", tool.cl.bulkMode == 3)
+step("bulk: mode to NAND, set gates", function() press("bulkMode") press("setGates") end)
+local function newA(k) return tool.cl.groups.A[k] and tool.cl.groups.A[k].inter end
+check("bulk: rebuilt once", #IMPORTS == DBG.imports + 1 and DBG.g1.destroyed, #IMPORTS)
+check("bulk: gates are NAND, timer untouched", newA(1) and newA(1).ctrl.mode == 3 and newA(2).ctrl.mode == 3
+	and newA(3).ctrl.ticks == 1 and not newA(1).destroyed, newA(1) and newA(1).ctrl.mode)
+check("bulk: wires kept", newA(4) and newA(4).children[1] == newA(1) and newA(1).children[1] == newA(3))
+check("bulk: groups follow", #tool.cl.groups.A == 4 and tool.cl.groups.B[1] and tool.cl.groups.B[1].inter == newA(3))
+check("bulk: result", result():find("Set 2 gate(s) to NAND", 1, true) and result():find("2 other part(s) skipped", 1, true), result())
+check("bulk: mode saved", tool.cl.saveIn ~= nil)
+step("bulk: same again changes nothing", function() press("setGates") end)
+check("bulk: no rebuild when nothing changes", #IMPORTS == DBG.imports + 1 and result():find("2 already NAND", 1, true), result())
+step("bulk: bad timer", function() tool:cl_onBulkTimerChanged(nil, "99s") press("setTimers") end)
+check("bulk: bad timer refused", #IMPORTS == DBG.imports + 1 and result():find("at most", 1, true), result())
+step("bulk: timer 1s 5t", function() tool:cl_onBulkTimerChanged(nil, "1s 5t") press("setTimers") end)
+check("bulk: timer set", newA(3) and newA(3).ctrl.seconds == 1 and newA(3).ctrl.ticks == 5 and newA(1).ctrl.mode == 3
+	and result():find("Set 1 timer(s) to 1s 5t", 1, true), result())
+step("bulk: undo", function() press("undo") end)
+check("bulk: undo restores the timer, groups follow", newA(3) and newA(3).ctrl.ticks == 1 and newA(3).ctrl.seconds == 0
+	and newA(1).ctrl.mode == 3 and #tool.cl.groups.A == 4 and result():find("Edit undone", 1, true), result())
+step("bulk: undo again = nothing", function() press("undo") end)
+check("bulk: only one rebuild undo", newA(1) and newA(1).ctrl.mode == 3, newA(1) and newA(1).ctrl.mode)
 
 -- destroyed part is pruned
 step("prune", function()

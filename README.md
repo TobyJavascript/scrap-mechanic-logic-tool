@@ -9,9 +9,15 @@ creations faster.
   dragging. Press Q to switch the box between full 3D and an XY, XZ or YZ layer,
   like the game's block drag. Parts show their order number in the group.
 - **Bulk wiring**: wire A to B all-to-all or zip (A0→B0, A1→B1…), or chain
-  the active group. A mode setting picks whether those buttons connect, cut or
-  flip (toggle) the wires. You can also clear the active group's inputs or
-  outputs, and Undo reverts the last action.
+  the active group. Ring chains it and closes the loop (3+ parts), and Self
+  wires each part to itself, which turns a group of XORs into memory cells.
+  A mode dropdown picks whether those buttons connect, cut or flip (toggle)
+  the wires. You can also clear the active group's inputs or outputs, and
+  Undo reverts the last action.
+- **Bulk edit**: set every gate in the active group to one mode (AND, XOR…)
+  or every timer to one delay (`5t`, `2s`, `1s 5t`). The creation is rebuilt
+  from its blueprint, stays on the lift, keeps your groups, and Undo puts it
+  back.
 - **Sorting**: sort a group by X, Y or Z, or reverse it.
 - **Pick similar**: F + click selects every matching part, by type, colour,
   gate mode or timer setting.
@@ -25,10 +31,10 @@ creations faster.
   (taken from the game as it is now), so the creation never changes. Arrows
   show this tick's changes (green on, red off) and wires that stay on
   (yellow); a countdown over each part says how many ticks until it changes
-  next, and self-wired XOR memories read MEM on / off. Inputs can be held, a
+  next, and self-wired XOR memories read MEM on / off. Inputs can be constant, a
   1 tick pulse, a pulse every N ticks (per input), or free after tick 0.
   Controls stay on the mouse (a HUD panel, not a menu), so you can walk
-  around while stepping; Q runs it at a chosen speed.
+  around while stepping; Q runs it at a typed speed (seconds per tick).
 - **Modules and LUTs**: load the logic between A (inputs) and B (outputs) as
   a table in the module window. Edit the outputs, and **Build LUT** rebuilds
   that logic as a clean lookup table: A in a line, inverters, one AND per row,

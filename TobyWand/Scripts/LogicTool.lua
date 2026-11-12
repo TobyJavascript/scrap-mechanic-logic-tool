@@ -86,10 +86,9 @@ local MODULE_HINT = "Put the inputs in A and the outputs in B (in order), then p
 	.. "The tool reads the logic between them and shows it as a table: every input combination "
 	.. "and what the outputs do. Edit the outputs, then Build LUT rebuilds that logic as a clean LUT."
 -- Step debugger
-local DEBUG_SPEEDS = { 0.1, 0.25, 0.5, 1, 2 }  -- Run: seconds per tick
-local DEBUG_SPEED_DEFAULT = 4
+local DEBUG_SPEED_MIN, DEBUG_SPEED_MAX = 0.05, 10 -- Run: seconds per tick (typed)
 local DEBUG_INPUT_MODES = { "hold", "pulse", "repeat", "free" }
-local DEBUG_INPUT_NAMES = { hold = "Held", pulse = "1 tick pulse", ["repeat"] = "Pulse every N ticks", free = "Free after tick 0" }
+local DEBUG_INPUT_NAMES = { hold = "Constant input", pulse = "1 tick pulse", ["repeat"] = "Pulse every N ticks", free = "Free after tick 0" }
 local DEBUG_EVERY_MAX = 10000
 local COLOR_STEADY = sm.color.new("d8b000ff") -- step debugger: on, but didn't change this tick
 local DEBUG_NET_LIMIT = 600     -- changed parts sent to the client per tick
@@ -105,7 +104,7 @@ local DEBUG_HINT = "Put the inputs in A and the outputs in B. Type the input val
 	.. "  Right click   one tick back\n"
 	.. "  Q             run / pause (at the run speed)\n"
 	.. "  R             stop and open the menu\n\n"
-	.. "Inputs:\n  Held: A stays at your values, like a switch.\n"
+	.. "Inputs:\n  Constant input: A stays at your values, like a switch.\n"
 	.. "  1 tick pulse: A has them for one tick, then goes back, like a 1 tick button. A toggle memory needs this.\n"
 	.. "  Pulse every N ticks: the inputs you set to 1 get a 1 tick pulse on tick 0, N, 2N ... (a clock). "
 	.. "The ones set to 0 stay off.\n"
@@ -136,11 +135,15 @@ local BOX_NORMAL = { xy = "z", xz = "y", yz = "x" }
 local LABEL_MODES = { "off", "index", "type", "delay" }
 local LABEL_NAMES = { off = "Off", index = "Order", type = "Type", delay = "Delay" }
 
-local CONNECT_MODES = { allToAll = "All > All", zip = "Zip 1:1", chain = "Chain" }
--- What All > All / Zip / Chain do: add wires, remove them, or toggle each pair.
+local CONNECT_MODES = { allToAll = "All > All", zip = "Zip 1:1", chain = "Chain", ring = "Ring", selfWire = "Self" }
+-- What the wiring buttons (All > All, Zip, Chain, Ring, Self) do: add wires, remove them, or toggle each pair.
 local WIRE_MODES = { "connect", "cut", "flip" }
 local WIRE_NAMES = { connect = "Mode: Connect", cut = "Mode: Cut", flip = "Mode: Flip" }
 local WIRE_VERBS = { connect = "Connect", cut = "Cut", flip = "Flip" }
+
+-- Bulk edit: the gate mode the Set gates button gives the active group
+-- (index i is the game's mode i - 1)
+local BULK_MODES = { "AND", "OR", "XOR", "NAND", "NOR", "XNOR" }
 
 -- what F+click picks: parts in the creation that match the one clicked
 local PICK_MODES = { "typeColor", "type", "color", "setting", "settingColor" }
@@ -160,6 +163,12 @@ local function partName(g, k) return g .. (k - 1) end
 
 local function speedText(seconds)
 	return string.format("%g s per tick", seconds)
+end
+
+-- The typed run speed ("0.5", "2", "0,5") in seconds per tick, or nil.
+local function parseSpeed(text)
+	local n = tonumber((tostring(text or ""):gsub("%s", ""):gsub(",", ".")))
+	if n and n >= DEBUG_SPEED_MIN and n <= DEBUG_SPEED_MAX then return n end
 end
 
 local HELP_TEXT = [[CONTROLS
@@ -189,6 +198,8 @@ Wiring (a and b can be one part or a list):
   cut(a, b)              remove connections
   flip(a, b)             connect if not wired, cut if wired
   chain(list)            list[1]>list[2]>list[3] ...
+  ring(list)             chain, then last>first (3+ parts)
+  selfWire(a)            each part to itself (XOR = memory)
   clearInputs(a)  clearOutputs(a)
 
 Lists:
@@ -322,9 +333,14 @@ function LogicTool:sv_applyOps(data, player)
 	end
 end
 
-function LogicTool:sv_undo(_, player)
+function LogicTool:sv_undo(data, player)
 	local stack = self.sv.undo[player.id]
 	local batch = stack and stack[#stack]
+	if not batch and self.sv.lutUndo[player.id] then
+		-- no wiring left to undo since the last rebuild: undo the rebuild
+		self:sv_lutUndo(data, player)
+		return
+	end
 	if not batch then
 		self.network:sendToClient(player, "cl_message", "Nothing to undo")
 		return
@@ -832,7 +848,139 @@ function LogicTool:sv_lutBuild(data, player)
 	end
 end
 
--- Puts back the creation as it was before the last build.
+-- Where each part sits in a blueprint: { [interactable id] = { bi, si, uuid, pos } }
+-- (body and shape index, as blueprintChilds matched them), to find the same
+-- parts again after the creation is rebuilt from that blueprint.
+local function partKeys(body, bp, inters)
+	local childs = blueprintChilds(body, bp)
+	local where = {}
+	for bi, bpBody in ipairs(bp.bodies or {}) do
+		for si, child in ipairs(bpBody.childs or {}) do where[child] = { bi, si } end
+	end
+	local keys = {}
+	for _, inter in ipairs(inters) do
+		local child = sm.exists(inter) and childs[inter.id]
+		local w = child and where[child]
+		if w then keys[inter.id] = { bi = w[1], si = w[2], uuid = child.shapeId, pos = child.pos } end
+	end
+	return keys
+end
+
+-- The part at `key` in a rebuilt creation (bodies in blueprint order): by
+-- index first, then by type and position.
+local function findRebuilt(creation, key)
+	local function at(body)
+		if not (body and sm.exists(body)) then return end
+		local shape = body:getShapes()[key.si]
+		if shape and tostring(shape.uuid) == key.uuid and shape.interactable then return shape.interactable end
+	end
+	local function byPos(body)
+		if not (body and sm.exists(body)) then return end
+		for _, shape in ipairs(body:getShapes()) do
+			local lp = shape.localPosition
+			if lp and shape.interactable and tostring(shape.uuid) == key.uuid
+				and lp.x == key.pos.x and lp.y == key.pos.y and lp.z == key.pos.z then
+				return shape.interactable
+			end
+		end
+	end
+	local found = at(creation[key.bi]) or byPos(creation[key.bi])
+	if found then return found end
+	for bi, body in ipairs(creation) do
+		if bi ~= key.bi then
+			found = byPos(body)
+			if found then return found end
+		end
+	end
+end
+
+-- The player's groups ({ A = {inters}, ... }) moved onto the rebuilt parts.
+local function remapGroups(groups, keys, creation)
+	local out = {}
+	for g, list in pairs(groups or {}) do
+		out[g] = {}
+		for _, inter in ipairs(list) do
+			local key = keys[inter.id]
+			local new = key and findRebuilt(creation, key)
+			if new then out[g][#out[g] + 1] = new end
+		end
+	end
+	return out
+end
+
+local function allGroupInters(groups)
+	local all = {}
+	for _, list in pairs(groups or {}) do
+		for _, inter in ipairs(list) do all[#all + 1] = inter end
+	end
+	return all
+end
+
+-- Bulk edit: every gate in data.inters gets data.mode, or every timer gets
+-- data.seconds / data.ticks. Lua can't change these on a part, so the
+-- creation is rebuilt from an edited blueprint (like Build LUT), goes back on
+-- the lift, and can be undone. The groups follow the rebuilt parts.
+function LogicTool:sv_bulkEdit(data, player)
+	local function reply(r) self.network:sendToClient(player, "cl_onBulkEdit", r) end
+	local ok, err = pcall(function()
+		local targets = {}
+		for _, inter in ipairs(data.inters or {}) do
+			if sm.exists(inter) then targets[#targets + 1] = inter end
+		end
+		if #targets == 0 then reply({ error = "Select the parts to edit in the active group first" }) return end
+		local want = data.mode ~= nil and "gate" or "timer"
+		local home = targets[1]:getShape().body
+		local onHome = {}
+		for _, b in ipairs(home:getCreationBodies()) do onHome[b.id] = true end
+
+		local lifted = home:isOnLift()
+		local okExp, bp = pcall(sm.creation.exportToTable, home, true, lifted)
+		if not (okExp and type(bp) == "table" and bp.bodies) then reply({ error = "Couldn't read the creation's blueprint" }) return end
+		local oldJson = sm.json.writeJsonString(bp)
+		local childs = blueprintChilds(home, bp)
+
+		local changed, same, other, elsewhere, missing = 0, 0, 0, 0, 0
+		for _, inter in ipairs(targets) do
+			local shape = inter:getShape()
+			local child = childs[inter.id]
+			local ctrl = child and child.controller
+			if not onHome[shape.body.id] then
+				elsewhere = elsewhere + 1
+			elseif kindOf(inter, shape) ~= want then
+				other = other + 1
+			elseif not ctrl then
+				missing = missing + 1
+			elseif want == "gate" then
+				if ctrl.mode == data.mode then same = same + 1 else ctrl.mode = data.mode changed = changed + 1 end
+			else
+				if ctrl.seconds == data.seconds and ctrl.ticks == data.ticks then
+					same = same + 1
+				else
+					ctrl.seconds, ctrl.ticks = data.seconds, data.ticks
+					changed = changed + 1
+				end
+			end
+		end
+		local counts = { changed = changed, same = same, other = other, elsewhere = elsewhere, missing = missing, kind = want }
+		if changed == 0 then reply(counts) return end
+
+		local keys = partKeys(home, bp, allGroupInters(data.groups))
+		local creation = sm.creation.importFromString(sm.world.getCurrentWorld(), sm.json.writeJsonString(bp), nil, nil, true)
+		if not creation or not creation[1] then reply({ error = "The game refused the edited blueprint; nothing was changed" }) return end
+		for _, shape in ipairs(home:getCreationShapes()) do
+			if sm.exists(shape) then shape:destroyShape() end
+		end
+		counts.relifted = lifted and self:sv_relift(player, creation, data.lift) or false
+		counts.lifted = lifted
+		counts.groups = remapGroups(data.groups, keys, creation)
+		self.sv.lutUndo[player.id] = { json = oldJson, bodies = creation, kind = "edit" }
+		self.sv.undo[player.id] = {} -- wire undo pointed at the old parts
+		reply(counts)
+	end)
+	if not ok then reply({ error = "Edit failed: " .. tostring(err) }) end
+end
+
+-- Puts back the creation as it was before the last build or bulk edit.
 function LogicTool:sv_lutUndo(data, player)
 	local u = self.sv.lutUndo[player.id]
 	if not u then
@@ -847,6 +995,14 @@ function LogicTool:sv_lutUndo(data, player)
 		self.network:sendToClient(player, "cl_message", "#ff4040Undo build failed: the game refused the old blueprint")
 		return
 	end
+	-- a bulk edit moves nothing, so the groups can follow the parts back
+	local groups
+	if u.kind == "edit" and body and data and data.groups then
+		local okExp, bp = pcall(sm.creation.exportToTable, body, true, lifted)
+		if okExp and type(bp) == "table" and bp.bodies then
+			groups = remapGroups(data.groups, partKeys(body, bp, allGroupInters(data.groups)), creation)
+		end
+	end
 	if body then
 		for _, shape in ipairs(body:getCreationShapes()) do
 			if sm.exists(shape) then shape:destroyShape() end
@@ -855,7 +1011,7 @@ function LogicTool:sv_lutUndo(data, player)
 	local relifted = lifted and self:sv_relift(player, creation, data and data.lift) or false
 	self.sv.lutUndo[player.id] = nil
 	self.sv.undo[player.id] = {}
-	self.network:sendToClient(player, "cl_onLutBuilt", { undone = true, lifted = lifted, relifted = relifted })
+	self.network:sendToClient(player, "cl_onLutBuilt", { undone = true, kind = u.kind, groups = groups, lifted = lifted, relifted = relifted })
 end
 
 function LogicTool:sv_analyze(data, player)
@@ -1192,10 +1348,13 @@ function LogicTool:client_onCreate()
 		verifyRows = nil,                      -- while building: the table the new logic must match
 		verify = nil,                          -- after a build: { rows, wait, tries } (see cl_updateVerify)
 		debug = nil,                           -- while stepping: { view =, running =, timer =, pending = }
-		debugSpeed = DEBUG_SPEED_DEFAULT,      -- setting: index in DEBUG_SPEEDS
+		debugSpeedText = "1",                  -- setting: Run speed, seconds per tick
 		debugInputMode = 1,                    -- setting: index in DEBUG_INPUT_MODES
 		debugEveryText = "4",                  -- setting: N for "Pulse every N ticks"
 		debugInputText = "",                   -- the debug window's input digits
+		bulkMode = 3,                          -- setting: index in BULK_MODES (XOR)
+		bulkTimerText = "0s 5t",               -- setting: what Set timers sets
+		bulkBusy = false,                      -- a bulk edit is on its way to the server
 		debugFrames = {},                      -- frames on the parts that changed this tick
 		press = nil,
 	}
@@ -1210,17 +1369,20 @@ function LogicTool:client_onCreate()
 	self.cl.box:setParameter("visualization", true)
 
 	local gui = sm.gui.createGuiFromLayout("$CONTENT_DATA/Gui/Layouts/LogicTool.layout", false)
-	for _, name in ipairs({ "close", "active", "clearActive", "clearAll", "undo", "sortX", "sortY", "sortZ", "reverse",
-		"allToAll", "zip", "chain", "wireMode", "clearOut", "clearIn", "timing", "truth", "lint", "lines", "labels",
-		"clearMarks", "libPrev", "libNext", "libSave", "libDelete", "run", "help", "pickBy", "probeFwd", "probeBack", "openScript", "closeScript", "openSettings", "closeSettings", "openModule", "closeModule", "loadModule", "resetModule", "lutCompress", "lutEven", "lutStyle", "buildLut", "cancelLut", "undoLut", "boxMode", "format",
-		"openDebug", "closeDebug", "debugFromGame", "debugSpeed", "debugHold", "debugStart" }) do
+	for _, name in ipairs({ "close", "clearActive", "clearAll", "undo", "sortX", "sortY", "sortZ", "reverse",
+		"allToAll", "zip", "chain", "ring", "selfWire", "clearOut", "clearIn", "timing", "truth", "lint",
+		"clearMarks", "libPrev", "libNext", "libSave", "libDelete", "run", "help", "probeFwd", "probeBack", "openScript", "closeScript", "openSettings", "closeSettings", "openModule", "closeModule", "loadModule", "resetModule", "buildLut", "cancelLut", "undoLut", "format",
+		"openDebug", "closeDebug", "debugFromGame", "debugStart", "setGates", "setTimers" }) do
 		gui:setButtonCallback(name, "cl_onButton")
 	end
 	gui:setTextChangedCallback("script", "cl_onScriptChanged")
 	gui:setTextChangedCallback("moduleTable", "cl_onModuleTableChanged")
 	gui:setTextChangedCallback("debugInputs", "cl_onDebugInputsChanged")
 	gui:setTextChangedCallback("debugEvery", "cl_onDebugEveryChanged")
+	gui:setTextChangedCallback("debugSpeed", "cl_onDebugSpeedChanged")
 	gui:setTextChangedCallback("scriptName", "cl_onScriptNameChanged")
+	gui:setTextChangedCallback("bulkTimer", "cl_onBulkTimerChanged")
+	self:cl_createDropDowns(gui)
 	gui:setText("debugEvery", self.cl.debugEveryText)
 	gui:setText("debugInfo", DEBUG_HINT)
 	self.cl.gui = gui
@@ -1234,6 +1396,8 @@ function LogicTool:client_onCreate()
 	gui:setText("scriptName", self.cl.scriptNameText)
 	gui:setText("debugInputs", self.cl.debugInputText)
 	gui:setText("debugEvery", self.cl.debugEveryText)
+	gui:setText("debugSpeed", self.cl.debugSpeedText)
+	gui:setText("bulkTimer", self.cl.bulkTimerText)
 	self:cl_showScript()
 	self:cl_showModuleInfo()
 	self:cl_refreshGui()
@@ -1796,8 +1960,13 @@ function LogicTool:client_onToggle()
 		self:cl_showDebugHud()
 		return true
 	end
-	self.cl.boxMode = self.cl.boxMode % #BOX_MODES + 1
-	local mode = BOX_MODES[self.cl.boxMode]
+	self:cl_setBoxMode(self.cl.boxMode % #BOX_MODES + 1)
+	return true
+end
+
+function LogicTool:cl_setBoxMode(i)
+	self.cl.boxMode = i
+	local mode = BOX_MODES[i]
 	local press = self.cl.press
 	if press then
 		press.mode = mode
@@ -1809,7 +1978,6 @@ function LogicTool:client_onToggle()
 	sm.audio.play("ConnectTool - Rotate")
 	sm.gui.displayAlertText("Box select: " .. BOX_NAMES[mode], 1.5)
 	self:cl_refreshGui()
-	return true
 end
 
 ---------------------------------------------------------------------------
@@ -1856,12 +2024,20 @@ function LogicTool:cl_connectMode(mode)
 	local wire = WIRE_MODES[self.cl.wireMode]
 	local ops = {}
 	local label = CONNECT_MODES[mode]
-	if mode == "chain" then
+	if mode == "chain" or mode == "ring" or mode == "selfWire" then
 		local g = self.cl.active
 		local list = self:cl_inters(g)
-		if #list < 2 then sm.gui.displayAlertText("Chain needs 2+ parts in " .. g, 2) return end
-		for i = 1, #list - 1 do ops[#ops + 1] = { kind = wire, p = list[i], c = list[i + 1] } end
-		label = "Chain " .. g
+		if mode == "selfWire" then
+			if #list == 0 then sm.gui.displayAlertText("Select parts in " .. g .. " first", 2) return end
+			for _, p in ipairs(list) do ops[#ops + 1] = { kind = wire, p = p, c = p } end
+		else
+			-- a ring of 2 would be a two-way wire, which the game does not allow
+			local min = mode == "ring" and 3 or 2
+			if #list < min then sm.gui.displayAlertText(label .. " needs " .. min .. "+ parts in " .. g, 2) return end
+			for i = 1, #list - 1 do ops[#ops + 1] = { kind = wire, p = list[i], c = list[i + 1] } end
+			if mode == "ring" then ops[#ops + 1] = { kind = wire, p = list[#list], c = list[1] } end
+		end
+		label = label .. " " .. g
 	else
 		if #A == 0 or #B == 0 then
 			sm.gui.displayAlertText("Select parts in A and B first", 2)
@@ -2024,10 +2200,10 @@ local SCRIPTS_PATH = "$CONTENT_DATA/scripts.json"
 local SETTINGS_SPEC = {
 	enums = {
 		boxMode = BOX_MODES, pickMode = PICK_MODES, labelMode = LABEL_MODES, wireMode = WIRE_MODES,
-		lutStyle = LUT_STYLES, debugSpeed = DEBUG_SPEEDS, debugInputMode = DEBUG_INPUT_MODES,
+		lutStyle = LUT_STYLES, debugInputMode = DEBUG_INPUT_MODES, bulkMode = BULK_MODES,
 	},
 	bools = { "showLines", "lutCompress", "lutEven" },
-	texts = { debugEveryText = 16, debugInputText = 64, scriptNameText = LogicSettings.NAME_MAX, script = 100000 },
+	texts = { debugSpeedText = 16, debugEveryText = 16, debugInputText = 64, bulkTimerText = 16, scriptNameText = LogicSettings.NAME_MAX, script = 100000 },
 }
 
 local function readJson(path)
@@ -2567,6 +2743,87 @@ function LogicTool:cl_onLutPreview(r)
 	self:cl_refreshGui()
 end
 
+-- Every group as a list of interactables, for a rebuild to carry over.
+function LogicTool:cl_allGroups()
+	local out = {}
+	for _, g in ipairs(GROUPS) do out[g] = self:cl_inters(g) end
+	return out
+end
+
+-- Replaces the groups named in `groups` (after a rebuild made new parts).
+function LogicTool:cl_setGroups(groups)
+	for _, g in ipairs(GROUPS) do
+		if groups[g] then
+			self:cl_clearGroup(g)
+			for _, inter in ipairs(groups[g]) do
+				if sm.exists(inter) then self:cl_add(g, inter, inter:getShape()) end
+			end
+		end
+	end
+end
+
+-- Set gates / Set timers: the active group's gates get the chosen mode, or
+-- its timers the typed setting (server: sv_bulkEdit).
+function LogicTool:cl_bulkEdit(kind)
+	local g = self.cl.active
+	local inters = self:cl_inters(g)
+	if #inters == 0 then sm.gui.displayAlertText("Select the parts to edit in " .. g .. " first", 2) return end
+	if self.cl.debug then sm.gui.displayAlertText("Stop the debugger first", 2) return end
+	if self.cl.lutPreview then sm.gui.displayAlertText("Cancel or apply the LUT build first", 2) return end
+	if self.cl.bulkBusy then return end
+	local data = { inters = inters, groups = self:cl_allGroups(), lift = self:cl_liftInfo() }
+	if kind == "gate" then
+		data.mode = self.cl.bulkMode - 1
+		data.label = BULK_MODES[self.cl.bulkMode]
+	else
+		local seconds, ticks = LogicGraph.parseTimer(self.cl.bulkTimerText)
+		if not seconds then
+			sm.gui.displayAlertText("#ff6060" .. ticks, 3)
+			self:cl_setResult(ticks)
+			return
+		end
+		data.seconds, data.ticks = seconds, ticks
+		data.label = string.format("%ds %dt", seconds, ticks)
+	end
+	self.cl.bulkBusy = data.label
+	self:cl_setResult("Editing " .. #inters .. " part(s) in " .. g .. " ...")
+	self.network:sendToServer("sv_bulkEdit", data)
+end
+
+function LogicTool:cl_onBulkEdit(r)
+	local label = self.cl.bulkBusy or ""
+	self.cl.bulkBusy = false
+	if r.error then
+		self:cl_message("#ff6060" .. r.error)
+		return
+	end
+	if r.groups then self:cl_setGroups(r.groups) end
+	local what = r.kind == "gate" and "gate(s)" or "timer(s)"
+	local lines = {}
+	if r.changed > 0 then
+		lines[#lines + 1] = string.format("Set %d %s to %s. Undo puts them back.", r.changed, what, label)
+	else
+		lines[#lines + 1] = string.format("No %s to change.", what)
+	end
+	if r.same > 0 then lines[#lines + 1] = string.format("%d already %s.", r.same, label) end
+	if r.other > 0 then
+		lines[#lines + 1] = string.format("%d other part(s) skipped (not a %s).", r.other, r.kind)
+	end
+	if r.elsewhere > 0 then
+		lines[#lines + 1] = string.format("%d part(s) on another creation skipped: edit one creation at a time.", r.elsewhere)
+	end
+	if r.missing > 0 then lines[#lines + 1] = string.format("%d part(s) not found in the blueprint.", r.missing) end
+	sm.gui.displayAlertText(lines[1], 3)
+	sm.audio.play(r.changed > 0 and "ConnectTool" or "ConnectTool - Released")
+	self:cl_setResult(table.concat(lines, "\n"))
+	if r.lifted and not r.relifted then
+		chat("The creation was on a lift; it now stands free. Put it back on the lift if you need to.")
+	end
+	-- type labels and the wire graph show the old settings until reloaded
+	self.cl.typeLabels, self.cl.partInfo = {}, {}
+	self:cl_refreshGui()
+end
+
 function LogicTool:cl_onLutBuilt(r)
 	self:cl_clearLutPreview()
 	if r.error then
@@ -2578,16 +2835,20 @@ function LogicTool:cl_onLutBuilt(r)
 	if r.undone then
 		self.cl.verifyRows = nil
 		self.cl.verify = nil
-		self:cl_message("Build undone: the creation is back as it was before the build.")
+		if r.groups then self:cl_setGroups(r.groups) end
+		if r.kind == "edit" then
+			self:cl_message("Edit undone: the parts are back as they were.")
+		else
+			self:cl_message("Build undone: the creation is back as it was before the build.")
+		end
+		if r.lifted and not r.relifted then
+			chat("The creation was on a lift; it now stands free. Put it back on the lift if you need to.")
+		end
+		self:cl_refreshGui()
 		return
 	end
 	if r.A and r.B then
-		for _, g in ipairs({ "A", "B" }) do
-			self:cl_clearGroup(g)
-			for _, inter in ipairs(r[g]) do
-				if sm.exists(inter) then self.cl.groups[g][#self.cl.groups[g] + 1] = { inter = inter, shape = inter:getShape() } end
-			end
-		end
+		self:cl_setGroups({ A = r.A, B = r.B })
 		self:cl_setResult(string.format("Built: %d new gate(s), %d old part(s) removed. Checking...", r.gates or 0, r.removed or 0))
 		-- reload the new module a moment later and compare (cl_updateVerify)
 		self.cl.verify = { rows = self.cl.verifyRows, wait = VERIFY_WAITS[1], tries = 0 }
@@ -2727,54 +2988,157 @@ function LogicTool:cl_refreshGui()
 	local gui = self.cl.gui
 	if not gui then return end
 	local g = self.cl.active
-	gui:setText("active", "Active: " .. GROUP_HEX[g] .. g)
 	local parts = {}
 	for _, name in ipairs(GROUPS) do
 		parts[#parts + 1] = GROUP_HEX[name] .. name .. " #ffffff" .. #self.cl.groups[name]
 	end
 	gui:setText("groupInfo", table.concat(parts, "     "))
-	gui:setText("lines", self.cl.showLines and "On" or "Off")
-	gui:setText("labels", LABEL_NAMES[LABEL_MODES[self.cl.labelMode]])
-	gui:setText("pickBy", PICK_NAMES[PICK_MODES[self.cl.pickMode]])
-	gui:setText("wireMode", WIRE_NAMES[WIRE_MODES[self.cl.wireMode]])
 	-- group letter last and coloured, like "Active: A", so no colour reset is needed
 	gui:setText("chain", "Chain: " .. GROUP_HEX[g] .. g)
+	gui:setText("ring", "Ring: " .. GROUP_HEX[g] .. g)
+	gui:setText("selfWire", "Self: " .. GROUP_HEX[g] .. g)
+	gui:setText("setGates", "Set gates: " .. GROUP_HEX[g] .. g)
+	gui:setText("setTimers", "Set timers: " .. GROUP_HEX[g] .. g)
 	gui:setText("clearIn", "Clear inputs: " .. GROUP_HEX[g] .. g)
 	gui:setText("clearOut", "Clear outputs: " .. GROUP_HEX[g] .. g)
-	gui:setText("boxMode", BOX_SHORT[BOX_MODES[self.cl.boxMode]])
 	local left = self.cl.leftWindow
-	gui:setText("openScript", left == "script" and "Hide script" or "< Script")
-	gui:setText("openSettings", left == "settings" and "Hide settings" or "< Settings")
-	gui:setText("openModule", left == "module" and "Hide module" or "< Module")
-	gui:setText("openDebug", left == "debug" and "Hide debug" or "< Debug")
-	gui:setText("debugSpeed", speedText(DEBUG_SPEEDS[self.cl.debugSpeed]))
-	gui:setText("debugHold", DEBUG_INPUT_NAMES[DEBUG_INPUT_MODES[self.cl.debugInputMode]])
+	-- the window buttons (blue) show their caption in a text box on top
+	gui:setText("openScriptText", left == "script" and "Hide script" or "< Script")
+	gui:setText("openSettingsText", left == "settings" and "Hide settings" or "< Settings")
+	gui:setText("openModuleText", left == "module" and "Hide module" or "< Module")
+	gui:setText("openDebugText", left == "debug" and "Hide debug" or "< Debug")
+	self:cl_syncDropDowns(gui)
 	gui:setText("buildLut", self.cl.lutPreview and "Apply build" or "Build LUT")
-	gui:setText("lutCompress", self.cl.lutCompress and "Stacked" or "Spread out")
-	gui:setText("lutEven", self.cl.lutEven and "Even timing" or "Fewer gates")
-	gui:setText("lutStyle", LUT_STYLE_NAMES[LUT_STYLES[self.cl.lutStyle]])
 	gui:setVisible("scriptWindow", left == "script")
 	gui:setVisible("settingsWindow", left == "settings")
 	gui:setVisible("moduleWindow", left == "module")
 	gui:setVisible("debugWindow", left == "debug")
 end
 
+-- Dropdowns (the game's own, see GuiInterface:createDropDown). Each has its
+-- options, which one is chosen now, and what choosing one does. The game
+-- calls back with the chosen text only, so every dropdown gets its own
+-- callback, cl_dd_<name>.
+local function names(list, map, prefix)
+	local out = {}
+	for i, v in ipairs(list) do out[i] = (prefix or "") .. (map and map[v] or v) end
+	return out
+end
+local function refreshModule(self)
+	self:cl_clearLutPreview()
+	self:cl_showModuleInfo()
+end
+local DROPDOWNS = {
+	{ name = "active", options = names(GROUPS, nil, "Active: "),
+		get = function(self) for i, g in ipairs(GROUPS) do if g == self.cl.active then return i end end return 1 end,
+		set = function(self, i) self.cl.active = GROUPS[i] end },
+	{ name = "wireMode", options = names(WIRE_MODES, WIRE_NAMES),
+		get = function(self) return self.cl.wireMode end,
+		set = function(self, i)
+			self.cl.wireMode = i
+			local wire = WIRE_MODES[i]
+			sm.gui.displayAlertText(wire == "connect" and "Buttons add wires"
+				or wire == "cut" and "Buttons remove wires" or "Buttons toggle wires", 1.5)
+		end },
+	{ name = "bulkMode", options = names(BULK_MODES, nil, "Gate: "),
+		get = function(self) return self.cl.bulkMode end,
+		set = function(self, i) self.cl.bulkMode = i end },
+	{ name = "boxMode", options = names(BOX_MODES, BOX_SHORT),
+		get = function(self) return self.cl.boxMode end,
+		set = function(self, i) self:cl_setBoxMode(i) end },
+	{ name = "pickBy", options = names(PICK_MODES, PICK_NAMES),
+		get = function(self) return self.cl.pickMode end,
+		set = function(self, i)
+			self.cl.pickMode = i
+			self:cl_setResult("F + click now picks every logic part in the creation with the " .. PICK_ALERT[PICK_MODES[i]] .. " as the one you click.")
+		end },
+	{ name = "lines", options = { "Off", "On" },
+		get = function(self) return self.cl.showLines and 2 or 1 end,
+		set = function(self, i) self.cl.showLines = i == 2 end },
+	{ name = "labels", options = names(LABEL_MODES, LABEL_NAMES),
+		get = function(self) return self.cl.labelMode end,
+		set = function(self, i)
+			self.cl.labelMode = i
+			if LABEL_MODES[i] == "type" then self:cl_requestAnalysis("info") end
+		end },
+	{ name = "debugHold", options = names(DEBUG_INPUT_MODES, DEBUG_INPUT_NAMES),
+		get = function(self) return self.cl.debugInputMode end,
+		set = function(self, i) self.cl.debugInputMode = i end },
+	{ name = "lutStyle", options = names(LUT_STYLES, LUT_STYLE_NAMES),
+		get = function(self) return self.cl.lutStyle end,
+		set = function(self, i) self.cl.lutStyle = i refreshModule(self) end },
+	{ name = "lutCompress", options = { "Spread out", "Stacked" },
+		get = function(self) return self.cl.lutCompress and 2 or 1 end,
+		set = function(self, i) self.cl.lutCompress = i == 2 refreshModule(self) end },
+	{ name = "lutEven", options = { "Even timing", "Fewer gates" },
+		get = function(self) return self.cl.lutEven and 1 or 2 end,
+		set = function(self, i) self.cl.lutEven = i == 1 refreshModule(self) end },
+}
+local DROPDOWN_BY_NAME = {}
+for _, dd in ipairs(DROPDOWNS) do
+	DROPDOWN_BY_NAME[dd.name] = dd
+	LogicTool["cl_dd_" .. dd.name] = function(self, value) self:cl_onDropDown(dd.name, value) end
+end
+
+function LogicTool:cl_createDropDowns(gui)
+	self.cl.ddShown = {}
+	for _, dd in ipairs(DROPDOWNS) do gui:createDropDown(dd.name, "cl_dd_" .. dd.name, dd.options) end
+end
+
+-- Shows the current choice in every dropdown (hotkeys change some of them).
+function LogicTool:cl_syncDropDowns(gui)
+	local shown = self.cl.ddShown or {}
+	self.cl.ddShown = shown
+	for _, dd in ipairs(DROPDOWNS) do
+		local want = dd.options[dd.get(self)]
+		if want and shown[dd.name] ~= want then
+			shown[dd.name] = want
+			gui:setSelectedDropDownItem(dd.name, want)
+		end
+	end
+end
+
+-- `value` is an option's text, or a number: pick that option.
+function LogicTool:cl_setDropDown(name, value)
+	local dd = DROPDOWN_BY_NAME[name]
+	local i = type(value) == "number" and value or nil
+	if not i then
+		for k, text in ipairs(dd.options) do if text == value then i = k end end
+	end
+	if not i or i == dd.get(self) then return end
+	if self.cl.confirm then self.cl.confirm = nil end
+	dd.set(self, i)
+	self:cl_markDirty(1)
+	self:cl_refreshGui()
+end
+
+function LogicTool:cl_onDropDown(name, value)
+	self.cl.ddShown[name] = value
+	self:cl_setDropDown(name, value)
+end
+
 function LogicTool:cl_onButton(name)
 	if self.cl.confirm and self.cl.confirm ~= name then self.cl.confirm = nil end
 	self:cl_markDirty(1)
+	if DROPDOWN_BY_NAME[name] then
+		-- not buttons any more; a press steps to the next option
+		local dd = DROPDOWN_BY_NAME[name]
+		self:cl_setDropDown(name, dd.get(self) % #dd.options + 1)
+		return
+	end
 	if name == "close" then
 		self.cl.gui:close()
-	elseif name == "active" then
-		local idx = 1
-		for i, gname in ipairs(GROUPS) do if gname == self.cl.active then idx = i end end
-		self.cl.active = GROUPS[idx % #GROUPS + 1]
 	elseif name == "clearActive" then
 		self:cl_clearGroup(self.cl.active)
 	elseif name == "clearAll" then
 		for _, g in ipairs(GROUPS) do self:cl_clearGroup(g) end
 		self:cl_clearMarks()
 	elseif name == "undo" then
-		self.network:sendToServer("sv_undo")
+		self.network:sendToServer("sv_undo", { lift = self:cl_liftInfo(), groups = self:cl_allGroups() })
+	elseif name == "setGates" then
+		self:cl_bulkEdit("gate")
+	elseif name == "setTimers" then
+		self:cl_bulkEdit("timer")
 	elseif name == "sortX" then
 		self:cl_sortActive("x")
 	elseif name == "sortY" then
@@ -2788,11 +3152,6 @@ function LogicTool:cl_onButton(name)
 		sm.gui.displayAlertText("Reversed " .. self.cl.active, 1.5)
 	elseif CONNECT_MODES[name] then
 		self:cl_connectMode(name)
-	elseif name == "wireMode" then
-		self.cl.wireMode = self.cl.wireMode % #WIRE_MODES + 1
-		local wire = WIRE_MODES[self.cl.wireMode]
-		sm.gui.displayAlertText(wire == "connect" and "Buttons add wires"
-			or wire == "cut" and "Buttons remove wires" or "Buttons toggle wires", 1.5)
 	elseif name == "clearOut" or name == "clearIn" then
 		local g = self.cl.active
 		local list = self:cl_inters(g)
@@ -2805,13 +3164,6 @@ function LogicTool:cl_onButton(name)
 		self:cl_sendOps(ops, "Clear " .. g .. (name == "clearIn" and " inputs" or " outputs"))
 	elseif name == "timing" or name == "lint" or name == "truth" then
 		self:cl_requestAnalysis(name)
-	elseif name == "lines" then
-		self.cl.showLines = not self.cl.showLines
-	elseif name == "labels" then
-		self.cl.labelMode = self.cl.labelMode % #LABEL_MODES + 1
-		if LABEL_MODES[self.cl.labelMode] == "type" then
-			self:cl_requestAnalysis("info")
-		end
 	elseif name == "clearMarks" then
 		self:cl_clearMarks()
 		self:cl_setResult("")
@@ -2825,8 +3177,6 @@ function LogicTool:cl_onButton(name)
 		self:cl_runScript()
 	elseif name == "format" then
 		self:cl_formatScript()
-	elseif name == "boxMode" then
-		self:client_onToggle()
 	elseif LEFT_WINDOWS[name] then
 		-- one window on the left at a time; the same button again hides it
 		local w = LEFT_WINDOWS[name]
@@ -2843,7 +3193,7 @@ function LogicTool:cl_onButton(name)
 		end
 	elseif name == "undoLut" then
 		self:cl_clearLutPreview()
-		self.network:sendToServer("sv_lutUndo", { lift = self:cl_liftInfo() })
+		self.network:sendToServer("sv_lutUndo", { lift = self:cl_liftInfo(), groups = self:cl_allGroups() })
 	elseif name == "loadModule" then
 		self.cl.verify = nil
 		self:cl_clearLutPreview()
@@ -2855,29 +3205,10 @@ function LogicTool:cl_onButton(name)
 			self:cl_showModuleTable()
 			self:cl_showModuleInfo()
 		end
-	elseif name == "lutCompress" then
-		self.cl.lutCompress = not self.cl.lutCompress
-		self:cl_clearLutPreview()
-		self:cl_showModuleInfo()
-	elseif name == "lutEven" then
-		self.cl.lutEven = not self.cl.lutEven
-		self:cl_clearLutPreview()
-		self:cl_showModuleInfo()
-	elseif name == "lutStyle" then
-		self.cl.lutStyle = self.cl.lutStyle % #LUT_STYLES + 1
-		self:cl_clearLutPreview()
-		self:cl_showModuleInfo()
-	elseif name == "pickBy" then
-		self.cl.pickMode = self.cl.pickMode % #PICK_MODES + 1
-		self:cl_setResult("F + click now picks every logic part in the creation with the " .. PICK_ALERT[PICK_MODES[self.cl.pickMode]] .. " as the one you click.")
 	elseif name == "probeFwd" or name == "probeBack" then
 		self:cl_startProbe(self:cl_inters("A"), name == "probeBack", nil)
 	elseif name == "help" then
 		self:cl_setResult(HELP_TEXT)
-	elseif name == "debugSpeed" then
-		self.cl.debugSpeed = self.cl.debugSpeed % #DEBUG_SPEEDS + 1
-	elseif name == "debugHold" then
-		self.cl.debugInputMode = self.cl.debugInputMode % #DEBUG_INPUT_MODES + 1
 	elseif name == "debugFromGame" then
 		local digits = {}
 		local A = self.cl.groups.A
@@ -2913,6 +3244,16 @@ function LogicTool:cl_onDebugInputsChanged(_, text)
 	self:cl_markDirty(2)
 end
 
+function LogicTool:cl_onBulkTimerChanged(_, text)
+	self.cl.bulkTimerText = text
+	self:cl_markDirty(2)
+end
+
+function LogicTool:cl_onDebugSpeedChanged(_, text)
+	self.cl.debugSpeedText = text
+	self:cl_markDirty(2)
+end
+
 function LogicTool:cl_onDebugEveryChanged(_, text)
 	self.cl.debugEveryText = text
 	self:cl_markDirty(2)
@@ -2930,6 +3271,9 @@ function LogicTool:cl_startDebug()
 	end
 	local inputs
 	if not err then inputs, err = parseDebugInputs(self.cl.debugInputText or "", #A) end
+	if not err and not parseSpeed(self.cl.debugSpeedText) then
+		err = string.format("Run speed: type the seconds per tick, from %g to %g (like 0.5)", DEBUG_SPEED_MIN, DEBUG_SPEED_MAX)
+	end
 	local mode = DEBUG_INPUT_MODES[self.cl.debugInputMode]
 	local every = tonumber(((self.cl.debugEveryText or ""):gsub("%s", "")))
 	if not err and mode == "repeat" and not (every and every >= 1 and every <= DEBUG_EVERY_MAX and every == math.floor(every)) then
@@ -3031,7 +3375,7 @@ function LogicTool:cl_showDebugHud()
 	local gui, d = self.cl.stepGui, self.cl.debug
 	if not (gui and d and d.view) then return end
 	local v = d.view
-	local state = d.running and ("#40ff60running#ffffff, " .. speedText(DEBUG_SPEEDS[self.cl.debugSpeed])) or "paused"
+	local state = d.running and ("#40ff60running#ffffff, " .. speedText(parseSpeed(self.cl.debugSpeedText) or 1)) or "paused"
 	gui:setText("stepTick", string.format("Tick %d   #a0a0a0%s", v.tick, state))
 	gui:setText("stepOutputs", string.format("%sA#ffffff %s     %sB#ffffff %s", GROUP_HEX.A, v.inputs, GROUP_HEX.B, v.outputs))
 	local info
@@ -3405,7 +3749,7 @@ function LogicTool:client_onUpdate(dt)
 	local dbg = self.cl.debug
 	if dbg and dbg.running and not dbg.pending then
 		dbg.timer = dbg.timer + dt
-		if dbg.timer >= DEBUG_SPEEDS[self.cl.debugSpeed] then
+		if dbg.timer >= (parseSpeed(self.cl.debugSpeedText) or 1) then
 			dbg.timer = 0
 			self:cl_debugStep(1)
 		end
