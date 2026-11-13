@@ -1025,6 +1025,63 @@ local function allGroupInters(groups)
 	return all
 end
 
+-- The wiring log points at parts; a rebuild (bulk edit, or undoing one)
+-- makes new ones. Before it: every part of the creation the log mentions,
+-- and where it sits (logMark). After it: the log points at the new parts
+-- (logFollow). Without this every older entry would have nothing to show.
+local function logInters(self, onBodies)
+	local out, seen = {}, {}
+	for _, log in pairs(self.sv.log) do
+		for _, e in ipairs(log.entries) do
+			for _, ch in ipairs(e.changes) do
+				for _, inter in ipairs({ ch.p, ch.c }) do
+					if sm.exists(inter) and not seen[inter.id] and onBodies[inter:getShape().body.id] then
+						seen[inter.id] = true
+						out[#out + 1] = inter
+					end
+				end
+			end
+		end
+	end
+	return out
+end
+
+local function logMark(self, keys)
+	for _, log in pairs(self.sv.log) do
+		for _, e in ipairs(log.entries) do
+			for _, ch in ipairs(e.changes) do
+				ch.pKey = sm.exists(ch.p) and keys[ch.p.id] or nil
+				ch.cKey = sm.exists(ch.c) and keys[ch.c.id] or nil
+			end
+		end
+	end
+end
+
+local function logFollow(self, creation)
+	for _, log in pairs(self.sv.log) do
+		for _, e in ipairs(log.entries) do
+			for _, ch in ipairs(e.changes) do
+				if ch.pKey then ch.p = findRebuilt(creation, ch.pKey) or ch.p end
+				if ch.cKey then ch.c = findRebuilt(creation, ch.cKey) or ch.c end
+				ch.pKey, ch.cKey = nil, nil
+			end
+		end
+	end
+end
+
+local function bodySet(body)
+	local set = {}
+	for _, b in ipairs(body:getCreationBodies()) do set[b.id] = true end
+	return set
+end
+
+local function join(a, b)
+	local out = {}
+	for _, x in ipairs(a) do out[#out + 1] = x end
+	for _, x in ipairs(b) do out[#out + 1] = x end
+	return out
+end
+
 -- Bulk edit: every gate in data.inters gets data.mode, or every timer gets
 -- data.seconds / data.ticks. Lua can't change these on a part, so the
 -- creation is rebuilt from an edited blueprint (like Build LUT), goes back on
@@ -1073,7 +1130,8 @@ function LogicTool:sv_bulkEdit(data, player)
 		local counts = { changed = changed, same = same, other = other, elsewhere = elsewhere, missing = missing, kind = want }
 		if changed == 0 then reply(counts) return end
 
-		local keys = partKeys(home, bp, allGroupInters(data.groups))
+		local keys = partKeys(home, bp, join(allGroupInters(data.groups), logInters(self, onHome)))
+		logMark(self, keys)
 		local creation = sm.creation.importFromString(sm.world.getCurrentWorld(), sm.json.writeJsonString(bp), nil, nil, true)
 		if not creation or not creation[1] then reply({ error = "The game refused the edited blueprint; nothing was changed" }) return end
 		for _, shape in ipairs(home:getCreationShapes()) do
@@ -1082,6 +1140,7 @@ function LogicTool:sv_bulkEdit(data, player)
 		counts.relifted = lifted and self:sv_relift(player, creation, data.lift) or false
 		counts.lifted = lifted
 		counts.groups = remapGroups(data.groups, keys, creation)
+		logFollow(self, creation)
 		self.sv.lutUndo[player.id] = { json = oldJson, bodies = creation, kind = "edit" }
 		self.sv.undo[player.id] = {} -- wire undo pointed at the old parts
 		reply(counts)
@@ -1104,12 +1163,17 @@ function LogicTool:sv_lutUndo(data, player)
 		self.network:sendToClient(player, "cl_message", "#ff4040Undo build failed: the game refused the old blueprint")
 		return
 	end
-	-- a bulk edit moves nothing, so the groups can follow the parts back
+	-- a bulk edit moves nothing, so the groups and the log can follow the
+	-- parts back
 	local groups
-	if u.kind == "edit" and body and data and data.groups then
+	if u.kind == "edit" and body then
 		local okExp, bp = pcall(sm.creation.exportToTable, body, true, lifted)
 		if okExp and type(bp) == "table" and bp.bodies then
-			groups = remapGroups(data.groups, partKeys(body, bp, allGroupInters(data.groups)), creation)
+			local groupInters = allGroupInters(data and data.groups)
+			local keys = partKeys(body, bp, join(groupInters, logInters(self, bodySet(body))))
+			if data and data.groups then groups = remapGroups(data.groups, keys, creation) end
+			logMark(self, keys)
+			logFollow(self, creation)
 		end
 	end
 	if body then
@@ -3666,6 +3730,7 @@ function LogicTool:cl_clearAllVisuals()
 end
 
 local UP = sm.vec3.new(0, 1, 0)
+local HIDDEN_SCALE = sm.vec3.new(0.0001, 0.0001, 0.0001) -- an unused line piece
 
 -- Pooled effect i, showing mesh `uuid` stretched from a to b.
 function LogicTool:cl_line(i, uuid, a, b, color, width)
@@ -3683,7 +3748,7 @@ function LogicTool:cl_line(i, uuid, a, b, color, width)
 	local d = b - a
 	local len = d:length()
 	if len < 0.001 then
-		e:stop()
+		e:setScale(HIDDEN_SCALE)
 		return
 	end
 	e:setParameter("color", color)
@@ -3795,9 +3860,12 @@ function LogicTool:cl_updateLines()
 		end
 	end
 
+	-- unused pieces are shrunk away, not stopped: an effect stopped and
+	-- started again a frame later can stay hidden while it says it plays.
+	-- They really stop only when the tool is put away (cl_hideWorldVisuals).
 	for i = n, #self.cl.lines do
 		local e = self.cl.lines[i]
-		if e and sm.exists(e) and e:isPlaying() then e:stop() end
+		if e and sm.exists(e) and e:isPlaying() then e:setScale(HIDDEN_SCALE) end
 	end
 end
 
@@ -4107,8 +4175,9 @@ function LogicTool:cl_logStep(dir)
 	if pos < 1 then sm.gui.displayAlertText("Oldest entry", 1) return end
 	if pos > #self.cl.log then sm.gui.displayAlertText("Newest entry", 1) return end
 	lv.pos = pos
-	lv.entry = nil
-	self:cl_clearDebugFrames()
+	-- the entry shown stays drawn until the next one arrives, so the arrows
+	-- never go away for a frame (see cl_updateLines)
+	lv.loading = true
 	self:cl_showLogHud()
 	self:cl_logFetch()
 end
@@ -4133,6 +4202,7 @@ function LogicTool:cl_onLogEntry(r)
 	local e = lv and self.cl.log[lv.pos]
 	if not (e and e.id == r.id) then return end -- moved on meanwhile
 	lv.pending = false
+	lv.loading = false
 	lv.entry = r
 	-- cubes on both ends of every wire
 	self:cl_clearDebugFrames()
@@ -4163,13 +4233,17 @@ function LogicTool:cl_showLogHud()
 	gui:setText("stepOutputs", logLine(e, nowTick()))
 	local r = lv.entry
 	local info
-	if not r then
+	if not r or lv.loading then
 		info = "Loading..."
 	elseif r.missing then
 		info = "#ff6060This entry is no longer kept#ffffff"
 	else
 		info = string.format("%d wire(s)", r.total)
-		if r.gone > 0 then info = info .. string.format("   #ffcc40%d gone (parts removed or rebuilt)#ffffff", r.gone) end
+		if r.total > 0 and r.gone == r.total then
+			info = "#ffcc40Nothing to show: the parts of this entry are gone (removed, or replaced by Build LUT)#ffffff"
+		elseif r.gone > 0 then
+			info = info .. string.format("   #ffcc40%d gone (parts removed or replaced by Build LUT)#ffffff", r.gone)
+		end
 		if r.total - r.gone > #r.wires then info = info .. string.format("   showing %d", #r.wires) end
 	end
 	gui:setText("stepInfo", info)

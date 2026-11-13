@@ -165,6 +165,8 @@ function Effect:setScale(v) assert(not self.destroyed, "use of destroyed effect:
 function Effect:start() assert(not self.destroyed) self.playing = true end
 function Effect:stop() self.playing = false end
 function Effect:isPlaying() return self.playing end
+-- on screen: playing and not shrunk away (unused line pieces stay playing)
+function SHOWN(e) return e.playing and not (e.scale and e.scale.x < 0.001) end
 function Effect:destroy() self.destroyed = true end
 
 local Gui = {}
@@ -355,7 +357,7 @@ dofile("$CONTENT_DATA/Scripts/LogicTool.lua")
 
 -- no accidental globals from here on
 local allowed = { CAM = true, LogicTool = true, LogicScript = true, LogicGraph = true, LogicModule = true, SERVER = true, clamp = true,
-	JSON_STORE = true, IMPORTS = true, DBG = true, LIFT = true, PLACED = true, FILES = true, JSON_COPY = true, NEW_TOOL = true, BOX_NAME_OF = true, TICK = true }
+	JSON_STORE = true, IMPORTS = true, DBG = true, LIFT = true, PLACED = true, FILES = true, JSON_COPY = true, NEW_TOOL = true, BOX_NAME_OF = true, TICK = true, SHOWN = true }
 setmetatable(_G, {
 	__newindex = function(t, k, v)
 		if not allowed[k] then error("global write: " .. tostring(k), 2) end
@@ -667,7 +669,7 @@ step("type labels back to order", function() for _ = 1, 3 do press("labels") end
 step("lines on", function() press("lines") tool:client_onUpdate(0.016) end)
 check("line effects drawn", (function()
 	local n = 0
-	for _, e in ipairs(tool.cl.lines) do if e.playing then n = n + 1 end end
+	for _, e in ipairs(tool.cl.lines) do if SHOWN(e) then n = n + 1 end end
 	return n > 0
 end)())
 step("box mode button", function() press("boxMode") press("boxMode") press("boxMode") press("boxMode") end)
@@ -968,7 +970,7 @@ step("debug hud", function() tool:client_onUpdate(0.016) end)
 check("hud open", tool.cl.stepGui:isActive() and tool.cl.stepGui.texts.stepTick:find("Tick 0", 1, true), tool.cl.stepGui.texts.stepTick)
 local function arrows()
 	local n = 0
-	for _, e in ipairs(tool.cl.lines) do if e.playing then n = n + 1 end end
+	for _, e in ipairs(tool.cl.lines) do if SHOWN(e) then n = n + 1 end end
 	return n
 end
 check("arrow from A", arrows() == 2, arrows())
@@ -1176,7 +1178,7 @@ check("wire: two log entries", #tool.cl.log == DBG.logWas + 2 and tool.cl.log[#t
 step("wire: draw", function() tool:client_onUpdate(0.016) end)
 check("wire: source arrows", (function()
 	local n = 0
-	for _, e in ipairs(tool.cl.lines) do if e.playing then n = n + 1 end end
+	for _, e in ipairs(tool.cl.lines) do if SHOWN(e) then n = n + 1 end end
 	return n == 4
 end)())
 step("wire: click g1 again cuts", function() clickAt(DBG.g1) end)
@@ -1193,7 +1195,18 @@ check("log: viewing the newest, the cut wire", lv() and lv().pos == #tool.cl.log
 step("log: hud", function() tool:client_onUpdate(0.016) end)
 check("log: hud text", tool.cl.stepGui:isActive() and tool.cl.stepGui.texts.stepTick:find("Log " .. #tool.cl.log .. " / ", 1, true)
 	and tool.cl.stepGui.texts.stepOutputs:find("1 min ago", 1, true), tool.cl.stepGui.texts.stepOutputs)
-step("log: left click = older", function() clickAt(DBG.g1) end)
+local playingBefore
+step("log: left click = older", function()
+	tool:client_onUpdate(0.016)
+	playingBefore = {}
+	for i, e in ipairs(tool.cl.lines) do if e.playing then playingBefore[i] = e end end
+	clickAt(DBG.g1)
+	tool:client_onUpdate(0.016)
+end)
+check("log: stepping never stops an arrow piece (stop + start can leave it hidden)", (function()
+	for _, e in pairs(playingBefore) do if not e.playing then return false end end
+	return next(playingBefore) ~= nil
+end)())
 check("log: older entry is sw > g2 connected", lv().entry and lv().entry.wires[1].c == DBG.g2 and lv().entry.wires[1].kind == "connect")
 step("log: Q undoes the shown entry", function() tool:client_onToggle() end)
 check("log: sw > g2 cut, a new entry, marked undone", #DBG.sw.children == 0 and tool.cl.log[lv().pos].undone == true
@@ -1216,6 +1229,36 @@ check("log: flip entries say Flip mode and what happened", (function()
 	return t:find("#" .. tool.cl.log[n].id .. "  All > All, Flip mode: #ff6060cut 1", 1, true)
 		and t:find("#" .. tool.cl.log[n - 1].id .. "  All > All, Flip mode: #40ff60connected 1", 1, true)
 end)(), tool.cl.gui.texts.logList)
+step("log: bulk edit the logged parts", function()
+	tool.cl.gui:close()
+	tool.cl.groups.A = {}
+	tool:cl_add("A", DBG.g1, DBG.g1.shape) tool:cl_add("A", DBG.g2, DBG.g2.shape)
+	tool.cl.active = "A"
+	tool:cl_dd_bulkMode("Gate: XOR")
+	press("setGates")
+end)
+check("log: the parts were rebuilt", DBG.g1.destroyed and DBG.sw.destroyed, result())
+step("log: view after the rebuild", function() press("logView") end)
+check("log: newest entry still shows its wire, on the new parts", lv() and lv().entry and lv().entry.gone == 0
+	and #lv().entry.wires == 1 and not lv().entry.wires[1].p.destroyed and lv().entry.wires[1].p ~= DBG.sw,
+	lv() and lv().entry and (lv().entry.gone .. " gone, " .. #lv().entry.wires .. " wires"))
+step("log: every entry survived", function()
+	DBG.goneTotal = 0
+	-- this test's own entries (older ones are on creations Build LUT replaced)
+	DBG.seen = 1
+	DBG.goneTotal = lv().entry.gone
+	while lv().pos > DBG.logWas + 1 do
+		tool:cl_logStep(-1)
+		DBG.seen = DBG.seen + 1
+		DBG.goneTotal = DBG.goneTotal + ((lv().entry and lv().entry.gone) or 0)
+	end
+	tool:client_onReload() tool.cl.gui:close()
+end)
+check("log: no entry lost its parts", DBG.goneTotal == 0 and DBG.seen >= 6, DBG.goneTotal .. " gone in " .. DBG.seen)
+step("log: undo the bulk edit, view again", function() press("undo") press("logView") end)
+check("log: still there after undoing the edit", lv() and lv().entry and lv().entry.gone == 0 and #lv().entry.wires > 0,
+	lv() and lv().entry and lv().entry.gone)
+step("log: stop", function() tool:client_onReload() end)
 step("log: clear needs two presses", function() press("logClear") end)
 check("log: not cleared yet", #tool.cl.log > 0)
 step("log: clear", function() press("logClear") end)
@@ -1238,7 +1281,7 @@ check("hidden after unequip", (function()
 	for _, g in ipairs({ "A", "B", "C" }) do
 		for _, e in pairs(tool.cl.markers[g]) do if e.playing then return false end end
 	end
-	for _, e in ipairs(tool.cl.lines) do if e.playing then return false end end
+	for _, e in ipairs(tool.cl.lines) do if SHOWN(e) then return false end end
 	return true
 end)())
 step("update while unequipped", function()
