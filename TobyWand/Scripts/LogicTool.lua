@@ -364,10 +364,10 @@ function LogicTool:sv_applyOps(data, player)
 			if #stack > 20 then table.remove(stack, 1) end
 			self.sv.undo[pid] = stack
 		end
-		local entry = #pending.changed > 0 and self:sv_logAdd(player, data.label or "Wire", pending) or nil
+		local entry = #pending.changed > 0 and self:sv_logAdd(player, data.label or "Wire", data.mode, pending) or nil
 		self.network:sendToClient(player, "cl_onOpsDone", {
 			made = pending.made, cut = pending.cut, skipped = pending.skipped,
-			failed = pending.failed, isUndo = pending.isUndo, label = data.label,
+			failed = pending.failed, isUndo = pending.isUndo, label = data.label, mode = data.mode,
 			entry = entry, undoneId = data.undoneId,
 		})
 	end
@@ -378,7 +378,7 @@ end
 ---------------------------------------------------------------------------
 
 -- Adds a batch of changes; returns the summary the client keeps.
-function LogicTool:sv_logAdd(player, label, pending)
+function LogicTool:sv_logAdd(player, label, mode, pending)
 	local log = self.sv.log[player.id]
 	if not log then
 		log = { entries = {}, nextId = 1 }
@@ -386,12 +386,12 @@ function LogicTool:sv_logAdd(player, label, pending)
 	end
 	local changes = {}
 	for i, ch in ipairs(pending.changed) do changes[i] = { kind = ch.kind, p = ch.p, c = ch.c } end
-	local e = { id = log.nextId, label = label, tick = nowTick(), changes = changes,
+	local e = { id = log.nextId, label = label, mode = mode, tick = nowTick(), changes = changes,
 		made = pending.made, cut = pending.cut }
 	log.nextId = log.nextId + 1
 	log.entries[#log.entries + 1] = e
 	if #log.entries > LOG_MAX then table.remove(log.entries, 1) end
-	return { id = e.id, label = e.label, tick = e.tick, made = e.made, cut = e.cut }
+	return { id = e.id, label = e.label, mode = e.mode, tick = e.tick, made = e.made, cut = e.cut }
 end
 
 local function logEntry(self, player, id)
@@ -439,7 +439,7 @@ function LogicTool:sv_logUndo(data, player)
 		local ch = e.changes[i]
 		ops[#ops + 1] = { kind = ch.kind == "connect" and "cut" or "connect", p = ch.p, c = ch.c }
 	end
-	self:sv_applyOps({ ops = ops, first = true, last = true, label = "Undo #" .. e.id .. " " .. e.label, undoneId = e.id }, player)
+	self:sv_applyOps({ ops = ops, first = true, last = true, label = "Undo of #" .. e.id, undoneId = e.id }, player)
 end
 
 function LogicTool:sv_undo(data, player)
@@ -460,7 +460,7 @@ function LogicTool:sv_undo(data, player)
 		local ch = batch[i]
 		ops[#ops + 1] = { kind = ch.kind == "connect" and "cut" or "connect", p = ch.p, c = ch.c }
 	end
-	self:sv_applyOps({ ops = ops, first = true, last = true, isUndo = true, label = "Undo" }, player)
+	self:sv_applyOps({ ops = ops, first = true, last = true, isUndo = true, label = "Undo button" }, player)
 end
 
 -- Gate modes and timer settings of every part in the creation of `body`,
@@ -2153,7 +2153,9 @@ function LogicTool:cl_hasSelection()
 	return false
 end
 
-function LogicTool:cl_sendOps(ops, label)
+-- `label` is what was pressed ("All > All", "Wire click" ...), `mode` the
+-- wire mode it ran in ("connect", "cut", "flip"), if it has one.
+function LogicTool:cl_sendOps(ops, label, mode)
 	if #ops == 0 then
 		sm.gui.displayAlertText("Nothing to do", 1.5)
 		return
@@ -2168,7 +2170,7 @@ function LogicTool:cl_sendOps(ops, label)
 			chunk[#chunk + 1] = { kind = op.kind, p = op.p, c = op.c }
 		end
 		i = i + OPS_PER_PACKET
-		self.network:sendToServer("sv_applyOps", { ops = chunk, first = first, last = i > n, label = label })
+		self.network:sendToServer("sv_applyOps", { ops = chunk, first = first, last = i > n, label = label, mode = mode })
 		first = false
 	end
 end
@@ -2211,7 +2213,7 @@ function LogicTool:cl_connectMode(mode)
 		end
 	end
 	self.cl.lastConnect = mode
-	self:cl_sendOps(ops, WIRE_VERBS[wire] .. " " .. label)
+	self:cl_sendOps(ops, label, wire)
 end
 
 function LogicTool:cl_onOpsDone(r)
@@ -2235,7 +2237,8 @@ function LogicTool:cl_onOpsDone(r)
 	if r.cut > 0 then parts[#parts + 1] = r.cut .. " cut" end
 	if r.skipped > 0 then parts[#parts + 1] = r.skipped .. " unchanged" end
 	if r.failed > 0 then parts[#parts + 1] = "#ff6060" .. r.failed .. " not allowed#ffffff" end
-	local msg = (r.label or "Done") .. ": " .. (#parts > 0 and table.concat(parts, ", ") or "no changes")
+	local msg = (r.mode and (WIRE_VERBS[r.mode] .. " ") or "") .. (r.label or "Done") .. ": "
+		.. (#parts > 0 and table.concat(parts, ", ") or "no changes")
 	sm.gui.displayAlertText(msg, 3)
 	sm.audio.play(r.failed > 0 and "ConnectTool - Released" or "ConnectTool")
 	local text = (msg:gsub("#%x%x%x%x%x%x", ""))
@@ -4036,7 +4039,7 @@ function LogicTool:cl_wireClick(inter)
 		self:cl_setWireSource(nil)
 		sm.audio.play("ConnectTool - Released")
 	else
-		self:cl_sendOps({ { kind = "flip", p = src, c = inter } }, "Wire")
+		self:cl_sendOps({ { kind = "flip", p = src, c = inter } }, "Wire click")
 	end
 end
 
@@ -4054,12 +4057,15 @@ end
 -- CLIENT: wiring log
 ---------------------------------------------------------------------------
 
+-- "#5  All > All, Flip mode: connected 2, cut 3  1 min ago": what was
+-- pressed, in which wire mode, and what actually happened
 local function logLine(e, now)
 	local parts = {}
-	if (e.made or 0) > 0 then parts[#parts + 1] = "#40ff60" .. e.made .. " connected#ffffff" end
-	if (e.cut or 0) > 0 then parts[#parts + 1] = "#ff6060" .. e.cut .. " cut#ffffff" end
+	if (e.made or 0) > 0 then parts[#parts + 1] = "#40ff60connected " .. e.made .. "#ffffff" end
+	if (e.cut or 0) > 0 then parts[#parts + 1] = "#ff6060cut " .. e.cut .. "#ffffff" end
+	local what = e.label .. (e.mode and (", " .. WIRE_VERBS[e.mode] .. " mode") or "")
 	local ago = (now and e.clientTick) and ("  #909090" .. agoText(now - e.clientTick) .. "#ffffff") or ""
-	return string.format("#%d  %s  %s%s%s", e.id, e.label, table.concat(parts, ", "), ago,
+	return string.format("#%d  %s: %s%s%s", e.id, what, table.concat(parts, ", "), ago,
 		e.undone and "  #909090(undone)#ffffff" or "")
 end
 

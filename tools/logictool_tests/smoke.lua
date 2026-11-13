@@ -1171,7 +1171,7 @@ check("wire: source picked, nothing wired, not added to a group", tool.cl.wireSo
 	and #DBG.sw.children == 0 and #tool.cl.groups.A == 0)
 step("wire: click g1 then g2", function() clickAt(DBG.g1) clickAt(DBG.g2) end)
 check("wire: both connected, source kept", #DBG.sw.children == 2 and tool.cl.wireSource ~= nil, #DBG.sw.children)
-check("wire: two log entries", #tool.cl.log == DBG.logWas + 2 and tool.cl.log[#tool.cl.log].label == "Wire"
+check("wire: two log entries", #tool.cl.log == DBG.logWas + 2 and tool.cl.log[#tool.cl.log].label == "Wire click"
 	and tool.cl.log[#tool.cl.log].made == 1, #tool.cl.log)
 step("wire: draw", function() tool:client_onUpdate(0.016) end)
 check("wire: source arrows", (function()
@@ -1185,7 +1185,7 @@ step("wire: right click drops the source", function() clickAt(nil, true) end)
 check("wire: source dropped, group unchanged", tool.cl.wireSource == nil and tool.cl.active == "A")
 step("log: window", function() tool.cl.gui:open() press("openLog") end)
 check("log: list newest first", tool.cl.gui.visible.logWindow == true and tool.cl.gui.texts.openLogText == "Hide log"
-	and (tool.cl.gui.texts.logList or ""):find("#" .. tool.cl.log[#tool.cl.log].id .. "  Wire  #ff60601 cut", 1, true), tool.cl.gui.texts.logList)
+	and (tool.cl.gui.texts.logList or ""):find("#" .. tool.cl.log[#tool.cl.log].id .. "  Wire click: #ff6060cut 1", 1, true), tool.cl.gui.texts.logList)
 step("log: view", function() TICK = TICK + 40 * 90 press("logView") end)
 local function lv() return tool.cl.logView end
 check("log: viewing the newest, the cut wire", lv() and lv().pos == #tool.cl.log and lv().entry and #lv().entry.wires == 1
@@ -1197,13 +1197,25 @@ step("log: left click = older", function() clickAt(DBG.g1) end)
 check("log: older entry is sw > g2 connected", lv().entry and lv().entry.wires[1].c == DBG.g2 and lv().entry.wires[1].kind == "connect")
 step("log: Q undoes the shown entry", function() tool:client_onToggle() end)
 check("log: sw > g2 cut, a new entry, marked undone", #DBG.sw.children == 0 and tool.cl.log[lv().pos].undone == true
-	and tool.cl.log[#tool.cl.log].label:find("Undo #", 1, true) and lv().pos == #tool.cl.log - 2, tool.cl.log[#tool.cl.log].label)
+	and tool.cl.log[#tool.cl.log].label == "Undo of #" .. tool.cl.log[lv().pos].id and lv().pos == #tool.cl.log - 2, tool.cl.log[#tool.cl.log].label)
 step("log: Q again", function() tool:client_onToggle() end)
 check("log: already undone", alerts[#alerts]:find("Already undone", 1, true) and #DBG.sw.children == 0, alerts[#alerts])
 step("log: R stops", function() tool:client_onReload() end)
 check("log: stopped, menu open, frames gone", tool.cl.logView == nil and tool.cl.gui:isActive() and #tool.cl.debugFrames == 0)
 step("log: the Undo button undoes the entry undo", function() press("undo") end)
 check("log: sw > g2 back", #DBG.sw.children == 1 and DBG.sw.children[1] == DBG.g2)
+step("log: a button entry names its mode", function()
+	tool.cl.groups.A, tool.cl.groups.B = {}, {}
+	tool:cl_add("A", DBG.sw, DBG.sw.shape) tool:cl_add("B", DBG.g1, DBG.g1.shape)
+	tool:cl_dd_wireMode("Mode: Flip") press("allToAll") press("allToAll") tool:cl_dd_wireMode("Mode: Connect")
+	press("clearAll")
+end)
+check("log: flip entries say Flip mode and what happened", (function()
+	local t = tool.cl.gui.texts.logList or ""
+	local n = #tool.cl.log
+	return t:find("#" .. tool.cl.log[n].id .. "  All > All, Flip mode: #ff6060cut 1", 1, true)
+		and t:find("#" .. tool.cl.log[n - 1].id .. "  All > All, Flip mode: #40ff60connected 1", 1, true)
+end)(), tool.cl.gui.texts.logList)
 step("log: clear needs two presses", function() press("logClear") end)
 check("log: not cleared yet", #tool.cl.log > 0)
 step("log: clear", function() press("logClear") end)
