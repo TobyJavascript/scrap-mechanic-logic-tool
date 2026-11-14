@@ -42,6 +42,25 @@
 	}
 }
 
+:root[data-theme="dark"] {
+	--bg: #15161a;
+	--panel: #1d1f24;
+	--panel-2: #24272d;
+	--text: #ececef;
+	--muted: #a2a3ad;
+	--line: #2f323a;
+	--accent: #ff9900;
+	--accent-text: #15161a;
+	--a: #ff9900;
+	--b: #00c8ff;
+	--c: #d040ff;
+	--on: #3fd46e;
+	--off: #ff5a5a;
+	--code-bg: #111214;
+	--shadow: none;
+	color-scheme: dark;
+}
+
 * { box-sizing: border-box; }
 
 html { scroll-padding-top: 76px; }
@@ -117,11 +136,23 @@ img { max-width: 100%; }
 .site-footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; justify-content: space-between; }
 .site-footer a { color: var(--muted); }
 
+/* Theme button, last in the header */
+.theme-toggle {
+	font: inherit;
+	font-size: .85rem;
+	border: 1px solid var(--line);
+	background: var(--panel);
+	color: var(--muted);
+	border-radius: 8px;
+	padding: 4px 10px;
+	cursor: pointer;
+}
+
 /* Keep the footer at the bottom on short pages */
 body { min-height: 100vh; display: flex; flex-direction: column; }
 body > main { flex: 1 0 auto; width: 100%; }
 
-/* Phones: nav on its own row under the brand */
+/* Phones: theme button next to the brand, nav on its own row */
 @media (max-width: 600px) {
 	.site-nav { order: 3; width: calc(100% + 12px); margin: 0 -6px 6px; gap: 0; flex-wrap: nowrap; justify-content: space-between; }
 	.site-nav a { padding: 6px 6px; font-size: .9rem; }
