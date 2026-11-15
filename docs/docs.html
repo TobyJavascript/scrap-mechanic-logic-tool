@@ -24,7 +24,260 @@
 	</div>
 </header>
 
-<main class="wrap"></main>
+<div class="wrap docs">
+	<nav class="toc" aria-label="On this page">
+		<p>Getting started</p>
+		<a href="#download">Download</a>
+		<a href="#controls">Controls</a>
+		<p>The tool</p>
+		<a href="#groups">Groups</a>
+		<a href="#wiring">Wiring</a>
+		<a href="#wire-mode">Wire click mode</a>
+		<a href="#log">The log</a>
+		<a href="#bulk-edit">Bulk edit</a>
+		<a href="#debug">Debug window</a>
+		<a href="#modules">Modules and LUTs</a>
+		<p>Lua scripting</p>
+		<a href="#lua">Basics</a>
+		<a href="#parts">Parts</a>
+		<a href="#lua-wiring">Wiring functions</a>
+		<a href="#lua-lists">List functions</a>
+		<a href="#lua-std">Standard library</a>
+		<a href="#lua-limits">Limits and errors</a>
+		<a href="#lua-examples">Examples</a>
+	</nav>
+
+	<article class="doc">
+		<h2 id="download">Download</h2>
+		<p>Get TobyWand from the Steam Workshop or GitHub: see the <a href="download.html">download page</a>. Enable it on a creative world, and take TobyWand from your inventory.</p>
+
+		<h2 id="controls">Controls</h2>
+		<p>Hold TobyWand and press <kbd>R</kbd> to open or close the panel.</p>
+		<div class="table-wrap"><table>
+			<tr><th>Key</th><th>What it does</th></tr>
+			<tr><td><kbd>Click</kbd> / drag</td><td>Add to the active group / box select</td></tr>
+			<tr><td><kbd>Right click</kbd></td><td>Next group</td></tr>
+			<tr><td><kbd>F</kbd> + <kbd>Click</kbd></td><td>Pick every matching part (by type, colour, gate mode or timer setting)</td></tr>
+			<tr><td><kbd>F</kbd> + <kbd>Right click</kbd></td><td>Delays from that part; again: delays to it; again: off</td></tr>
+			<tr><td><kbd>Q</kbd></td><td>Box select mode: 3D, or one XY, XZ or YZ layer</td></tr>
+			<tr><td><kbd>R</kbd></td><td>Open / close the panel; stops the log viewer and the step debugger</td></tr>
+		</table></div>
+		<p>The log viewer and the step debugger keep their controls on the mouse, so you can walk around while using them. See <a href="#log">the log</a> and <a href="#debug">the debug window</a>.</p>
+
+		<h2 id="groups">Groups</h2>
+		<p>Everything starts with groups. Click logic parts to add them to the active group (<span class="ga">A</span>, <span class="gb">B</span> or <span class="gc">C</span>), or drag a box around many at once. Right click moves on to the next group.</p>
+		<p>Order matters. Each part shows its number in the group (A0, A1…), and wiring like zip and chain follows that order. Sort a group by X, Y or Z, or reverse it, to line it up with another.</p>
+
+		<h2 id="wiring">Wiring</h2>
+		<p>The connect section wires whole groups at once. The mode dropdown, first in the section, picks what the buttons do:</p>
+		<ul>
+			<li><strong>Connect</strong> adds wires,</li>
+			<li><strong>Cut</strong> removes them,</li>
+			<li><strong>Flip</strong> toggles each one: wired becomes unwired and the other way round.</li>
+		</ul>
+		<div class="table-wrap"><table>
+			<tr><th>Button</th><th>Wires</th></tr>
+			<tr><td>All&gt;All</td><td>Every part of A to every part of B</td></tr>
+			<tr><td>Zip</td><td>A0→B0, A1→B1… in group order</td></tr>
+			<tr><td>Chain</td><td>The active group in a line: 0→1→2…</td></tr>
+			<tr><td>Ring</td><td>A chain that closes the loop, last→first (3 or more parts)</td></tr>
+			<tr><td>Self</td><td>Each part to itself. A self-wired XOR is a memory cell</td></tr>
+			<tr><td>Clear in / Clear out</td><td>Removes every input or output of the active group</td></tr>
+		</table></div>
+		<p><strong>Undo</strong> reverts the last action, wiring or bulk edit.</p>
+
+		<h2 id="wire-mode">Wire click mode</h2>
+		<p>The dropdown next to the active group switches clicks from <em>select</em> to <em>wire</em>. TobyWand then works like the game's connect tool: click a part to pick it as the source, then click the parts it should feed. Clicking a part that's already wired cuts that wire. Right click drops the source.</p>
+		<p>The difference from the connect tool: every change is logged.</p>
+
+		<h2 id="log">The log</h2>
+		<p>Every wire change made with TobyWand goes into the log: buttons, scripts, wire clicks and undos. Each entry says what happened (how many wires were connected and cut) and how long ago.</p>
+		<p>Open the Log window and press <strong>View log</strong> to step through the entries in the world. Green arrows are wires that were added, red arrows wires that were removed.</p>
+		<div class="table-wrap"><table>
+			<tr><th>Key</th><th>In the log viewer</th></tr>
+			<tr><td><kbd>Click</kbd> / <kbd>Right click</kbd></td><td>Older / newer entry</td></tr>
+			<tr><td><kbd>Q</kbd></td><td>Undo the entry shown, even if it isn't the last one</td></tr>
+			<tr><td><kbd>R</kbd></td><td>Stop</td></tr>
+		</table></div>
+		<p>The log follows your parts through bulk edits. Parts removed by hand, or replaced by Build LUT, can't be shown any more, and the entry says so.</p>
+
+		<h2 id="bulk-edit">Bulk edit</h2>
+		<p>The edit section changes every part in the active group at once:</p>
+		<ul>
+			<li><strong>Set gates</strong> sets every logic gate to the mode in the dropdown (AND, OR, XOR, NAND, NOR, XNOR).</li>
+			<li><strong>Set timers</strong> sets every timer to the delay you type. Write it as ticks, seconds or both: <code>5t</code>, <code>2s</code>, <code>1s 5t</code>. A plain number is ticks.</li>
+		</ul>
+		<p>The creation is rebuilt from its blueprint. It stays on the lift, keeps its wires and your groups, and Undo puts it back as it was.</p>
+
+		<h2 id="debug">Debug window</h2>
+		<h3>Analysis</h3>
+		<ul>
+			<li><strong>Timing</strong>: the fewest and most ticks from group A (start) to group B (end), and the slowest path.</li>
+			<li><strong>Loops</strong> and <strong>glitch risks</strong>: a glitch risk is a gate whose inputs arrive on different ticks, so it can flicker.</li>
+			<li><strong>Truth table</strong> from A (inputs) to B (outputs).</li>
+			<li><strong>Delay probe</strong> (<kbd>F</kbd> + <kbd>Right click</kbd>): numbers every gate by how many ticks it is after, or before, a part.</li>
+		</ul>
+		<h3>Step debugger</h3>
+		<p><strong>Start debug</strong> runs the logic between A and B one tick at a time, like a code debugger. It works on a copy of the circuit as it is now, so the creation never changes.</p>
+		<ul>
+			<li>Arrows show this tick's changes (green on, red off) and wires that stay on (yellow).</li>
+			<li>A countdown over each part says how many ticks until it changes next. Self-wired XOR memories read MEM on / off.</li>
+			<li>Inputs can be a constant input, a 1 tick pulse, a pulse every N ticks, or left free after tick 0.</li>
+		</ul>
+		<div class="table-wrap"><table>
+			<tr><th>Key</th><th>In the step debugger</th></tr>
+			<tr><td><kbd>Click</kbd> / <kbd>Right click</kbd></td><td>One tick forward / back</td></tr>
+			<tr><td><kbd>Q</kbd></td><td>Run / pause, at the speed typed in the Debug window (seconds per tick)</td></tr>
+			<tr><td><kbd>R</kbd></td><td>Stop</td></tr>
+		</table></div>
+
+		<h2 id="modules">Modules and LUTs</h2>
+		<p>The Module window loads the logic between A (inputs) and B (outputs) as a truth table. Edit the outputs, then <strong>Build LUT</strong> rebuilds that logic as a clean lookup table: A in a line, inverters, one AND per row, and B as the ORs.</p>
+		<ul>
+			<li>You see a ghost preview before anything changes.</li>
+			<li>The old circuit is removed as a whole, or kept whole when something else still uses it. Gates that only feed A move along with it.</li>
+			<li>Afterwards the tool reloads the module and checks it against your table. <strong>Undo build</strong> puts the creation back.</li>
+			<li>Builds that would go over the game's 255 inputs or outputs per part are refused before anything changes.</li>
+		</ul>
+		<p>Two styles, chosen in Settings:</p>
+		<ul>
+			<li><strong>ROM</strong>: a decoder and an OR plane.</li>
+			<li><strong>XOR</strong>: XORs of shared AND terms (positive-polarity Reed–Muller), often much smaller.</li>
+			<li><strong>Auto</strong> picks the one with fewer gates.</li>
+		</ul>
+		<p>Settings also choose stacked or spread-out gates, and even timing (no glitches) or fewer gates.</p>
+
+		<h2 id="lua">Lua scripting</h2>
+		<p>The Script window runs Lua against your groups. <span class="ga">A</span>, <span class="gb">B</span> and <span class="gc">C</span> are lists of the parts you selected, in group order, and functions like <code>connect</code> wire them.</p>
+<pre><code><span class="cm">-- pair A and B by their position along X</span>
+<span class="f">sort</span>(<span class="A">A</span>, <span class="s">"x"</span>)
+<span class="f">sort</span>(<span class="B">B</span>, <span class="s">"x"</span>)
+<span class="f">connect</span>(<span class="A">A</span>, <span class="B">B</span>, <span class="s">"zip"</span>)</code></pre>
+		<p>The editor has syntax highlighting, <strong>Format</strong> (re-indents and refreshes the colours), and a library: save your own scripts by name, next to the built-in examples.</p>
+		<div class="note"><p><strong>All or nothing.</strong> Nothing is wired unless the whole script runs without errors. A finished run is one Undo step and one log entry.</p></div>
+		<div class="note"><p><strong>Counting from 0 and 1.</strong> In game, parts are numbered from 0 (A0, A1…), but Lua lists start at 1. <code>A[1]</code> is A0, <code>A[2]</code> is A1, and <code>A[#A]</code> is the last one.</p></div>
+
+		<h2 id="parts">Parts</h2>
+		<p>Each item in a group is a table describing one part. Reading these never changes the game.</p>
+		<div class="table-wrap"><table>
+			<tr><th>Field</th><th>Value</th></tr>
+			<tr><td><code>p.x</code> <code>p.y</code> <code>p.z</code></td><td>Position, in blocks</td></tr>
+			<tr><td><code>p.group</code></td><td><code>"A"</code>, <code>"B"</code> or <code>"C"</code></td></tr>
+			<tr><td><code>p.index</code></td><td>Its number in the group, from 0 (what the game shows)</td></tr>
+			<tr><td><code>p.kind</code></td><td><code>"gate"</code>, <code>"timer"</code>, <code>"input"</code>, <code>"output"</code>, or <code>"script"</code> for modded parts with an input and an output</td></tr>
+			<tr><td><code>p.mode</code></td><td>Gates only: <code>"AND"</code> <code>"OR"</code> <code>"XOR"</code> <code>"NAND"</code> <code>"NOR"</code> <code>"XNOR"</code></td></tr>
+			<tr><td><code>p.delay</code></td><td>Delay in ticks (1 for a gate, the set delay for a timer)</td></tr>
+			<tr><td><code>p.color</code></td><td>Paint colour as hex, like <code>"df7f00"</code></td></tr>
+			<tr><td><code>p.id</code></td><td>A unique id, the same for the same part in every group</td></tr>
+		</table></div>
+		<p><code>print(p)</code> prints a part by its name, like <code>A3</code>.</p>
+
+		<h2 id="lua-wiring">Wiring functions</h2>
+		<p>Wherever a function takes <code>a</code> or <code>b</code>, you can pass one part or a list of parts.</p>
+
+		<h3><code>connect(a, b, mode)</code></h3>
+		<p>Wires <code>a</code> to <code>b</code>. <code>mode</code> is <code>"all"</code> (the default: every part of <code>a</code> to every part of <code>b</code>) or <code>"zip"</code> (<code>a[1]</code>→<code>b[1]</code>, <code>a[2]</code>→<code>b[2]</code>…). If zip gets lists of different lengths, it pairs the shorter length and prints a note.</p>
+
+		<h3><code>cut(a, b, mode)</code></h3>
+		<p>Removes wires, paired the same way as <code>connect</code>.</p>
+
+		<h3><code>flip(a, b, mode)</code></h3>
+		<p>Connects each pair that isn't wired, and cuts each pair that is.</p>
+
+		<h3><code>chain(list)</code></h3>
+		<p><code>list[1]</code>→<code>list[2]</code>→<code>list[3]</code>…</p>
+
+		<h3><code>ring(list)</code></h3>
+		<p>A chain, then the last part to the first. Needs 3 or more parts, since 2 would be a two-way wire, which the game doesn't allow.</p>
+
+		<h3><code>selfWire(a)</code></h3>
+		<p>Wires each part to itself. A self-wired XOR gate holds its state: a memory cell. No other function wires a part to itself; <code>connect(A, A)</code> skips those pairs.</p>
+
+		<h3><code>clearInputs(a)</code> &nbsp;·&nbsp; <code>clearOutputs(a)</code></h3>
+		<p>Removes every input, or every output, of the parts.</p>
+
+		<h2 id="lua-lists">List functions</h2>
+		<p>Groups are plain Lua tables, so <code>#A</code>, <code>ipairs(A)</code> and indexing all work as normal.</p>
+
+		<h3><code>sort(list, key)</code></h3>
+		<p>Sorts the list in place and returns it. <code>key</code> is <code>"x"</code>, <code>"y"</code>, <code>"z"</code>, <code>"index"</code> or <code>"delay"</code>, with a <code>-</code> in front for descending (<code>"-z"</code>). The default is <code>"x"</code>. Parts that tie keep their order. You can also pass a function: <code>sort(A, function(p, q) return p.y &lt; q.y end)</code>.</p>
+
+		<h3><code>reverse(list)</code></h3>
+		<p>Reverses the list in place and returns it.</p>
+
+		<h3><code>slice(list, i, j)</code></h3>
+		<p>A new list of items <code>i</code> to <code>j</code>. Negative numbers count from the end: <code>slice(A, 2, -1)</code> is everything but the first.</p>
+
+		<h3><code>filter(list, fn)</code></h3>
+		<p>A new list of the parts where <code>fn(p)</code> is true.</p>
+
+		<h3><code>join(a, b, …)</code></h3>
+		<p>One new list of all the parts given, in order: <code>join(A, B, C[1])</code>.</p>
+
+		<h3><code>getbit(n, k)</code></h3>
+		<p>Bit <code>k</code> of the number <code>n</code> (0 or 1), counting from 0. Handy for decoders.</p>
+
+		<h3><code>print(…)</code></h3>
+		<p>Writes to the script output below the editor. Parts print as their name.</p>
+
+		<h2 id="lua-std">Standard library</h2>
+		<p>Scripts run normal Lua: <code>local</code>, <code>if</code>, <code>for</code>, <code>while</code>, <code>repeat</code>, functions, closures and tables. These are available:</p>
+		<ul>
+			<li><code>math</code>, <code>string</code>, <code>table</code> and <code>bit</code></li>
+			<li><code>pairs</code> <code>ipairs</code> <code>next</code> <code>type</code> <code>tostring</code> <code>tonumber</code> <code>select</code> <code>unpack</code> <code>assert</code> <code>error</code> <code>pcall</code></li>
+		</ul>
+		<p>Scripts can't touch files, the game or other mods: only the wiring functions change anything.</p>
+
+		<h2 id="lua-limits">Limits and errors</h2>
+		<div class="table-wrap"><table>
+			<tr><th>Limit</th><th>Value</th></tr>
+			<tr><td>Wiring operations per run</td><td>20,000</td></tr>
+			<tr><td>Printed lines</td><td>400</td></tr>
+			<tr><td>Running time</td><td>2,000,000 steps; past that the script stops as an endless loop</td></tr>
+		</table></div>
+		<p>Errors name the line, like <code>line 4: connect needs a part or a list of parts, got nil</code>, and the line is marked in the editor. Use <code>error("message")</code> to stop a script yourself.</p>
+
+		<h2 id="lua-examples">Examples</h2>
+		<p>These are in the script library in game too.</p>
+
+		<h3>Decoder</h3>
+		<p>A holds the input bits (lowest first), C the same bits through NOT gates, and B one AND gate per output value.</p>
+<pre><code><span class="k">for</span> i, gate <span class="k">in</span> <span class="l">ipairs</span>(<span class="B">B</span>) <span class="k">do</span>
+    <span class="k">for</span> k = <span class="n">1</span>, #<span class="A">A</span> <span class="k">do</span>
+        <span class="k">if</span> <span class="f">getbit</span>(i - <span class="n">1</span>, k - <span class="n">1</span>) == <span class="n">1</span> <span class="k">then</span>
+            <span class="f">connect</span>(<span class="A">A</span>[k], gate)
+        <span class="k">else</span>
+            <span class="f">connect</span>(<span class="C">C</span>[k], gate)
+        <span class="k">end</span>
+    <span class="k">end</span>
+<span class="k">end</span>
+<span class="f">print</span>(<span class="s">"decoder for"</span>, #<span class="A">A</span>, <span class="s">"bits,"</span>, #<span class="B">B</span>, <span class="s">"outputs"</span>)</code></pre>
+
+		<h3>Shift register / delay line</h3>
+<pre><code><span class="cm">-- chain A in X order, then feed the last one into B</span>
+<span class="f">sort</span>(<span class="A">A</span>, <span class="s">"x"</span>)
+<span class="f">chain</span>(<span class="A">A</span>)
+<span class="f">connect</span>(<span class="A">A</span>[#<span class="A">A</span>], <span class="B">B</span>)</code></pre>
+
+		<h3>Reverse a bus</h3>
+<pre><code><span class="cm">-- A[1] -> B[n], A[2] -> B[n-1], ...</span>
+<span class="k">for</span> i = <span class="n">1</span>, <span class="l">math</span>.min(#<span class="A">A</span>, #<span class="B">B</span>) <span class="k">do</span>
+    <span class="f">connect</span>(<span class="A">A</span>[i], <span class="B">B</span>[#<span class="B">B</span> + <span class="n">1</span> - i])
+<span class="k">end</span></code></pre>
+
+		<h3>A row of memory cells</h3>
+<pre><code><span class="cm">-- A = XOR gates (the cells), B = one set line per cell</span>
+<span class="f">selfWire</span>(<span class="A">A</span>)
+<span class="f">connect</span>(<span class="B">B</span>, <span class="A">A</span>, <span class="s">"zip"</span>)</code></pre>
+
+		<h3>Only some gates</h3>
+<pre><code><span class="k">local</span> xors = <span class="f">filter</span>(<span class="A">A</span>, <span class="k">function</span>(p)
+    <span class="k">return</span> p.mode == <span class="s">"XOR"</span>
+<span class="k">end</span>)
+<span class="f">connect</span>(xors, <span class="B">B</span>)
+<span class="f">print</span>(#xors, <span class="s">"XOR gates connected"</span>)</code></pre>
+	</article>
+</div>
 
 <footer class="site-footer">
 	<div class="wrap">

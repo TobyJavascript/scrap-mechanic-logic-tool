@@ -188,6 +188,18 @@ pre {
 	margin: 12px 0 20px;
 }
 
+/* Editor colours, same as the in-game script editor */
+.k { color: #c586c0; }
+.v { color: #569cd6; }
+.n { color: #b5cea8; }
+.s { color: #ce9178; }
+.cm { color: #6a9955; }
+.f { color: #dcdcaa; }
+.l { color: #4ec9b0; }
+.A { color: #ff9900; }
+.B { color: #00c8ff; }
+.C { color: #d040ff; }
+
 .note {
 	border-left: 3px solid var(--accent);
 	background: var(--panel);
@@ -196,6 +208,56 @@ pre {
 	margin: 16px 0;
 }
 .note p { margin: 0; }
+
+/* Group colours in text (A B C) */
+.ga { color: var(--a); font-weight: 700; }
+.gb { color: var(--b); font-weight: 700; }
+.gc { color: var(--c); font-weight: 700; }
+
+/* Docs layout */
+.docs {
+	display: grid;
+	grid-template-columns: 220px 1fr;
+	gap: 40px;
+	padding: 32px 16px 64px;
+}
+.toc {
+	position: sticky;
+	top: 80px;
+	align-self: start;
+	max-height: calc(100vh - 100px);
+	overflow-y: auto;
+	font-size: .92rem;
+}
+.toc p { font-weight: 700; margin: 16px 0 4px; font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.toc p:first-child { margin-top: 0; }
+.toc a { display: block; color: var(--muted); text-decoration: none; padding: 3px 0; }
+.toc a:hover { color: var(--text); }
+.toc a.on { color: var(--accent); font-weight: 600; }
+.doc { min-width: 0; }
+.doc h2 { margin-top: 40px; padding-top: 8px; border-top: 1px solid var(--line); }
+.doc h2:first-child { margin-top: 0; border-top: 0; padding-top: 0; }
+.doc h3 { margin-top: 28px; }
+.doc h3 code { font-size: 1em; background: none; padding: 0; }
+@media (max-width: 800px) {
+	.docs { grid-template-columns: 1fr; gap: 16px; }
+	.toc { position: static; max-height: none; border-bottom: 1px solid var(--line); padding-bottom: 16px; }
+}
+
+table { border-collapse: collapse; width: 100%; margin: 12px 0 20px; font-size: .95rem; }
+.table-wrap { overflow-x: auto; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); font-size: .85rem; }
+kbd {
+	font-family: inherit;
+	font-size: .85em;
+	padding: 1px 7px;
+	border: 1px solid var(--line);
+	border-bottom-width: 2px;
+	border-radius: 5px;
+	background: var(--panel);
+	white-space: nowrap;
+}
 
 /* Contact */
 .contact-list { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
@@ -226,7 +288,7 @@ pre {
 
 /* Keep the footer at the bottom on short pages */
 body { min-height: 100vh; display: flex; flex-direction: column; }
-body > main { flex: 1 0 auto; width: 100%; }
+body > main, body > .docs { flex: 1 0 auto; width: 100%; }
 
 /* Phones: theme button next to the brand, nav on its own row */
 @media (max-width: 600px) {
