@@ -24,7 +24,109 @@
 	</div>
 </header>
 
-<main class="wrap"></main>
+<main>
+	<div class="hero-band">
+	<!-- Background slideshow: add a slide by copying a line (data-src = the image, data-pos = which part to keep in view) -->
+	<div class="hero-bg" aria-hidden="true">
+		<div class="slide" data-src="img/background.png" data-pos="right center"></div>
+		<div class="slide" data-src="img/background2.png" data-pos="center 40%"></div>
+		<div class="slide" data-src="img/background3.png" data-pos="center 40%"></div>
+	</div>
+	<div class="wrap hero">
+		<!-- site.js swaps in the newest version tag from GitHub, and keeps this text if that fails -->
+		<span class="status" id="version">In development · not released yet</span>
+		<h1>Build vanilla logic <span class="tag">faster</span>.</h1>
+		<p class="lead">TobyWand is a handheld logic tool for Scrap Mechanic. Select gates into groups, wire hundreds of them in one click or a few lines of Lua, step through your circuit tick by tick, and turn a truth table into a clean lookup table.</p>
+		<div class="chips" aria-hidden="true"><span class="chip a">A</span><span class="chip b">B</span><span class="chip c">C</span></div>
+		<div class="actions">
+			<a class="btn primary" href="download.html">Download</a>
+			<a class="btn" href="tutorials.html">Watch the tutorials</a>
+			<a class="btn" href="docs.html">Read the docs</a>
+		</div>
+	</div>
+	</div>
+
+	<section>
+		<div class="wrap">
+			<h2>What it does</h2>
+			<p class="section-lead">Everything works on normal game parts. Creations you build with TobyWand run without the mod.</p>
+			<!-- Feature showcase: one slide per <article>, in order. Images are img/slideshow/slide1.png ... slide6.png;
+			     a missing file shows "Screenshot coming soon" -->
+			<div class="showcase" id="features">
+				<div class="show-tabs" role="tablist" aria-label="Features"></div>
+				<div class="show-panel">
+					<article class="feature" data-name="Groups" data-img="img/slideshow/slide1.png">
+						<h3>Select in groups</h3>
+						<p>Click or box-drag logic parts into groups <span class="ga">A</span>, <span class="gb">B</span> and <span class="gc">C</span>. Box select works in 3D or one layer at a time, and every part shows its place in the group, so you always know what gets wired to what.</p>
+					</article>
+					<article class="feature" data-name="Wiring" data-img="img/slideshow/slide2.png">
+						<h3>Wire many at once</h3>
+						<p>All-to-all, zip (A0→B0, A1→B1…), chain, ring or self-wire. Connect, cut or flip, clear inputs and outputs, and undo any of it.</p>
+					</article>
+					<article class="feature" data-name="Log" data-img="img/slideshow/slide3.png">
+						<h3>Wire click mode and log</h3>
+						<p>Wire like the connect tool, with every change logged. Step through the log in the world with arrows and undo any entry, not just the last.</p>
+					</article>
+					<article class="feature" data-name="Bulk edit" data-img="img/slideshow/slide4.png">
+						<h3>Bulk edit</h3>
+						<p>Set every gate in a group to one mode, or every timer to one delay (<code>5t</code>, <code>2s</code>, <code>1s 5t</code>). The creation stays on the lift and your groups are kept.</p>
+					</article>
+					<article class="feature" data-name="Debug" data-img="img/slideshow/slide5.png">
+						<h3>Analyse and step</h3>
+						<p>Timing from inputs to outputs, loops, glitch risks and truth tables. The step debugger runs your logic one tick at a time, forward and back, without touching the creation.</p>
+					</article>
+					<article class="feature" data-name="Modules" data-img="img/slideshow/slide6.png">
+						<h3>Truth table to LUT</h3>
+						<p>Load the logic between A and B as a table, edit it, and Build LUT rebuilds it as an optimised lookup table: ROM or XOR style, whichever is smaller.</p>
+					</article>
+				</div>
+			</div>
+		</div>
+	</section>
+
+	<section>
+		<div class="wrap">
+			<h2>What it doesn't do</h2>
+			<p class="section-lead">TobyWand is for logic: groups, wires, gates and timers. It doesn't move, rotate or reshape blocks and parts.</p>
+			<div class="show-panel aside-panel">
+				<div class="feature-shot"><img src="img/bingo.png" alt="Bingo's Block Editor in game" loading="lazy"></div>
+				<div class="feature-text">
+					<div class="kicker">Looking for a block editor?</div>
+					<h3>Try Bingo's Block Editor</h3>
+					<p>For editing blocks and parts themselves, Bingo's Block Editor lets you edit a creation's JSON right in game. Use it for the blocks, and TobyWand for the logic.</p>
+					<p class="more"><a class="btn" href="https://steamcommunity.com/sharedfiles/filedetails/?id=2987476458">See it on the Steam Workshop</a></p>
+				</div>
+			</div>
+		</div>
+	</section>
+
+	<section>
+		<div class="wrap split">
+			<div>
+				<h2>Wire it with Lua</h2>
+				<p class="section-lead">The built-in editor has syntax highlighting, formatting and a script library. Your groups are plain Lua lists, so a decoder or a shift register is a few lines. Nothing is wired unless the whole script runs.</p>
+				<a class="btn" href="docs.html#lua">Documentation</a>
+			</div>
+<pre><code><span class="cm">-- zip A to B by position</span>
+<span class="f">connect</span>(<span class="f">sort</span>(<span class="A">A</span>, <span class="s">"x"</span>), <span class="f">sort</span>(<span class="B">B</span>, <span class="s">"x"</span>), <span class="s">"zip"</span>)
+
+<span class="cm">-- only the XOR gates in A drive B</span>
+<span class="k">local</span> xors = <span class="f">filter</span>(<span class="A">A</span>, <span class="k">function</span>(p)
+    <span class="k">return</span> p.mode == <span class="s">"XOR"</span>
+<span class="k">end</span>)
+<span class="f">connect</span>(xors, <span class="B">B</span>)
+<span class="f">print</span>(#xors, <span class="s">"XOR gates connected"</span>)</code></pre>
+		</div>
+	</section>
+
+	<section>
+		<div class="wrap">
+			<h2>Get it</h2>
+			<p class="section-lead">TobyWand isn't released yet. Follow along on the <a href="tutorials.html">tutorials page</a>, or <a href="contact.html">get in touch</a> if you want to try it early.</p>
+			<a class="btn primary" href="download.html">Download</a>
+		</div>
+	</section>
+</main>
 
 <footer class="site-footer">
 	<div class="wrap">
