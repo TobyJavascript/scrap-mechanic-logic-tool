@@ -8,7 +8,7 @@
 --   Right click        switch active group (A > B > C)
 --   F + right click    delay numbers on every part after the one you look at
 --                      (again: parts before it, again: off)
---   Q                  box select mode: 3D box, or a flat XY / XZ / YZ layer
+--   Q                  switch Click: Select / Click: Wire; during a box drag: 3D box, or a flat XY / XZ / YZ layer
 --   R                  open the menu
 
 dofile("$SURVIVAL_DATA/Scripts/util.lua")            -- clamp() etc., needed by AnimationUtil
@@ -45,6 +45,7 @@ local NAME_BY_UUID = {
 local FRAME_UUID = sm.uuid.new("5b1e6c2a-8d4f-4b7e-9c3a-1f2e7d6a4c05") -- glowing box frame (markers)
 local WIRE_UUID = sm.uuid.new("5b1e6c2a-8d4f-4b7e-9c3a-1f2e7d6a4c03")  -- round wire
 local ARROW_UUID = sm.uuid.new("5b1e6c2a-8d4f-4b7e-9c3a-1f2e7d6a4c04") -- arrowhead
+local DOT_UUID = sm.uuid.new("5b1e6c2a-8d4f-4b7e-9c3a-1f2e7d6a4c06")   -- round dot (wire mode)
 local PLASTIC_UUID = sm.uuid.new("628b2d61-5ceb-43e9-8334-a4135566df7a")
 
 local GROUPS = { "A", "B", "C" }
@@ -103,6 +104,17 @@ local DEBUG_INPUT_NAMES = { hold = "Constant input", pulse = "1 tick pulse", ["r
 local DEBUG_EVERY_MAX = 10000
 local COLOR_STEADY = sm.color.new("d8b000ff") -- step debugger: on, but didn't change this tick
 local COLOR_SOURCE = sm.color.new("ffffffff") -- Wire click mode: the picked source part
+-- Click: Wire dots, like the connect tool's circles
+local COLOR_DOT = sm.color.new("c8c8c8ff")        -- a part you can pick
+local COLOR_DOT_HOVER = sm.color.new("ffd23cff")  -- the part you're aiming at
+local COLOR_DOT_PICKED = sm.color.new("40ff60ff") -- the picked source
+local DOT_MAX = 300       -- dots drawn at most, nearest first
+local DOT_SIZE = 0.55     -- dot size as a fraction of its part (a logic gate: about 14 cm)
+local DRAG_ARROW_GAP = 0.03 -- dragging: the arrow tip stops this close to the target's centre (m)
+local DOT_HOVER_GROW = 1.5
+local DOT_SNAP = 0.04     -- aim snaps to a dot this close to the crosshair (radians, about 2 degrees)
+local DOT_REFRESH = 15    -- frames between re-reading which parts get dots
+local WIRE_DRAG_TURN = 0.02 -- the view must turn this much (about 1 degree) for a press to count as a drag
 local LOG_MAX = 200          -- wiring log entries kept per player (this session)
 local LOG_DRAW_MAX = 300     -- wires of one entry sent to the client to draw
 
@@ -204,12 +216,17 @@ local HELP_TEXT = [[CONTROLS
   Right click       next group
   F + click         pick every matching part (filter: the F: button)
   F + right click   delays from that part; again: delays to it; again: off
-  Q                 box select mode: 3D / XY / XZ / YZ layer
+  Q                 switch to Click: Wire
+  Q while dragging  box select mode: 3D / XY / XZ / YZ layer
 
 CLICK: WIRE (the dropdown next to Active)
+  Drag              from a dot to a dot: wire them (cut if already wired)
   Click             pick the source, then click the parts it feeds
-                    (click a wired part again to cut, like the connect tool)
   Right click       drop the source
+  Q                 back to Click: Select
+  Dots: grey = can pick, yellow = aimed at, green = the source.
+  Aiming near a dot is enough. With parts in A, wiring starts only
+  on A; with parts in B, it ends only on B.
 
 LOG (Log window, then View log)
   Left / right click   older / newer entry
@@ -1528,6 +1545,11 @@ function LogicTool:client_onCreate()
 		bulkMode = 3,                          -- setting: index in BULK_MODES (XOR)
 		clickMode = 1,                         -- setting: index in CLICK_MODES
 		wireSource = nil,                      -- Click: Wire: { inter =, effect = } the picked source
+		wireDrag = nil,                        -- Click: Wire: { dir = } while the button is held after picking
+		wireList = nil,                        -- Click: Wire: the parts that get dots now
+		wireAim = nil,                         -- Click: Wire: the part the crosshair snaps to
+		wireCache = nil,                       -- Click: Wire: { asTarget, src, bodies, list, set, frames }
+		dots = {},                             -- Click: Wire: pooled dot effects
 		log = {},                              -- wiring log summaries { id, label, tick, made, cut, undone }, oldest first
 		logView = nil,                         -- while browsing the log: { pos =, entry =, pending = }
 		bulkTimerText = "0s 5t",               -- setting: what Set timers sets
@@ -1665,7 +1687,7 @@ function LogicTool:client_onEquip()
 	if self.tool:isLocal() then
 		self.tool:setFpRenderables(fp)
 		swapFpAnimation(self.fpAnimations, "unequip", "equip", 0.2)
-		sm.gui.displayAlertText("TobyWand:  R = menu   Q = box mode   F+click = pick matching   F+right click = delays", 5)
+		sm.gui.displayAlertText("TobyWand:  R = menu   Q = select / wire (while dragging: box mode)   F+click = pick matching   F+right click = delays", 5)
 		self:cl_rebuildMarkers()
 	end
 end
@@ -2052,19 +2074,28 @@ function LogicTool:client_onEquippedUpdate(primary, secondary, forceBuild)
 	self.cl.hoverInter = logicInter
 
 	if CLICK_MODES[self.cl.clickMode] == "wire" and not forceBuild then
-		-- like the game's connect tool: left click picks the source, then wires
-		-- it to every part you click; right click drops the source
+		-- like the game's connect tool: drag from a part to a part, or click a
+		-- source and then click the parts it feeds; right click drops the source
 		self.cl.press = nil
-		sm.gui.setInteractionText("", sm.gui.getKeyBinding("Create", true), self:cl_wireHint(logicInter),
+		local list = self:cl_wireCandidates(shape)
+		local aim = self:cl_wireAimAt(list, logicInter)
+		self.cl.wireList, self.cl.wireAim = list, aim
+		self.cl.hoverInter = aim
+		sm.gui.setInteractionText("", sm.gui.getKeyBinding("Create", true), self:cl_wireHint(aim),
 			sm.gui.getKeyBinding("Attack", true), self:cl_wireSource() and "Drop source" or "")
 		if primary == sm.tool.interactState.start then
-			self:cl_wireClick(logicInter)
-		elseif secondary == sm.tool.interactState.start and self:cl_wireSource() then
+			self:cl_wirePress(aim, logicInter)
+		elseif primary == sm.tool.interactState.stop then
+			self:cl_wireRelease(aim)
+		end
+		if secondary == sm.tool.interactState.start and self:cl_wireSource() then
+			self.cl.wireDrag = nil
 			self:cl_setWireSource(nil)
 			sm.audio.play("ConnectTool - Released")
 		end
 		return true, true
 	end
+	self.cl.wireList, self.cl.wireAim, self.cl.wireDrag = nil, nil, nil
 
 	local g = self.cl.active
 	local hint
@@ -2159,7 +2190,8 @@ function LogicTool:client_onReload()
 	return true
 end
 
--- Q: next box select mode (also while dragging, like the game's block drag)
+-- Q: during a box drag the next box mode (like the game's block drag), else
+-- switch between Click: Select and Click: Wire
 function LogicTool:client_onToggle()
 	if self.cl.logView then
 		self:cl_logUndoShown()
@@ -2178,7 +2210,14 @@ function LogicTool:client_onToggle()
 		self:cl_showDebugHud()
 		return true
 	end
-	self:cl_setBoxMode(self.cl.boxMode % #BOX_MODES + 1)
+	if self.cl.press and CLICK_MODES[self.cl.clickMode] == "select" then
+		-- the button is held (a box drag): next box mode, like the game's block drag
+		self:cl_setBoxMode(self.cl.boxMode % #BOX_MODES + 1)
+	else
+		-- otherwise: switch between selecting and wiring
+		self:cl_setDropDown("clickMode", self.cl.clickMode % #CLICK_MODES + 1)
+		sm.audio.play("ConnectTool - Rotate")
+	end
 	return true
 end
 
@@ -3275,9 +3314,11 @@ local DROPDOWNS = {
 		get = function(self) return self.cl.clickMode end,
 		set = function(self, i)
 			self.cl.clickMode = i
+			self.cl.press = nil
+			self.cl.wireDrag = nil
 			if CLICK_MODES[i] ~= "wire" then self:cl_setWireSource(nil) end
-			sm.gui.displayAlertText(CLICK_MODES[i] == "wire" and "Click a part to wire from, then the parts it feeds"
-				or "Clicks add parts to the active group", 2)
+			sm.gui.displayAlertText(CLICK_MODES[i] == "wire" and "Click: Wire. Drag from a dot to a dot (Q: back to select)"
+				or "Click: Select. Clicks add parts to the active group (Q: wire)", 2)
 		end },
 	{ name = "wireMode", options = names(WIRE_MODES, WIRE_NAMES),
 		get = function(self) return self.cl.wireMode end,
@@ -3716,6 +3757,9 @@ function LogicTool:cl_hideWorldVisuals()
 	end
 	local src = self.cl.wireSource
 	if src and sm.exists(src.effect) then src.effect:stop() end
+	for _, e in ipairs(self.cl.dots) do
+		if sm.exists(e) then e:stop() end
+	end
 end
 
 function LogicTool:cl_clearAllVisuals()
@@ -3760,12 +3804,12 @@ end
 
 -- A connection: a wire from the parent, then an arrowhead pointing into the
 -- child (the input side), stopping at the child's surface.
-function LogicTool:cl_connection(i, from, to, color)
+function LogicTool:cl_connection(i, from, to, color, gap)
 	local d = to - from
 	local len = d:length()
 	if len < 0.01 then return i end
 	local dir = d / len
-	local gap = math.min(ARROW_GAP, len * 0.4)
+	gap = math.min(gap or ARROW_GAP, len * 0.4)
 	local arrowLen = math.min(ARROW_LEN, len * 0.3)
 	local tip = to - dir * gap
 	local base = tip - dir * arrowLen
@@ -3814,6 +3858,19 @@ function LogicTool:cl_updateLines()
 		end
 	end
 	local src = not view and not lv and self:cl_wireSource()
+	if src and self.cl.wireDrag then
+		-- dragging: a line from the source to the dot you aim at, or the crosshair
+		local from = src:getShape().worldPosition
+		local aim = self.cl.wireAim
+		local to
+		if aim and sm.exists(aim) then
+			to = aim:getShape().worldPosition
+		else
+			local cam = sm.camera.getPosition()
+			to = cam + sm.camera.getDirection() * math.max(0.5, (from - cam):length())
+		end
+		n = self:cl_connection(n, from, to, aim and COLOR_DOT_HOVER or COLOR_DOT, DRAG_ARROW_GAP)
+	end
 	if src then
 		-- Click: Wire: what the source feeds now
 		local from = src:getShape().worldPosition
@@ -4069,6 +4126,7 @@ function LogicTool:client_onUpdate(dt)
 	end
 
 	self:cl_updateLines()
+	self:cl_drawDots()
 	self:cl_updateLabels(dt)
 end
 
@@ -4095,30 +4153,209 @@ function LogicTool:cl_wireSource()
 	if s then self:cl_setWireSource(nil) end
 end
 
--- Left click in Wire mode: pick the source, or wire the source to this part
--- (connect, or cut if they already are, like the game's connect tool).
-function LogicTool:cl_wireClick(inter)
-	local src = self:cl_wireSource()
-	if not inter then return end
-	if not src then
-		self:cl_setWireSource(inter)
-		sm.audio.play("ConnectTool - Selected")
-	elseif src == inter then
-		self:cl_setWireSource(nil)
-		sm.audio.play("ConnectTool - Released")
+-- Which parts can be wired from (no source picked) or to (a source picked).
+-- A with parts: wiring starts only on A. B with parts: it ends only on B.
+function LogicTool:cl_wireAllowed(inter, asTarget)
+	if not (inter and sm.exists(inter)) then return false end
+	local g = asTarget and "B" or "A"
+	if #self.cl.groups[g] > 0 then return self:cl_indexOf(g, inter) ~= nil end
+	local ok, t
+	if asTarget then
+		ok, t = pcall(inter.getConnectionInputType, inter)
 	else
-		self:cl_sendOps({ { kind = "flip", p = src, c = inter } }, "Wire click")
+		ok, t = pcall(inter.getConnectionOutputType, inter)
+	end
+	return ok and bit.band(t, LOGIC) ~= 0
+end
+
+-- The parts that get dots: group A or B when it has parts, else every logic
+-- part on the creation you look at (and on the source's). Re-read every few
+-- frames; looking at the sky keeps the last creation, so you can aim between dots.
+function LogicTool:cl_wireCandidates(lookShape)
+	local src = self:cl_wireSource()
+	local asTarget = src ~= nil
+	local c = self.cl.wireCache
+	local lookBody = lookShape and sm.exists(lookShape) and lookShape.body or nil
+	-- groups changed (A or B decide what may be picked)
+	local A, B = self.cl.groups.A, self.cl.groups.B
+	local groupKey = #A .. ":" .. #B .. ":" .. (A[1] and A[1].inter.id or "") .. ":" .. (B[1] and B[1].inter.id or "")
+		.. ":" .. (A[#A] and A[#A].inter.id or "") .. ":" .. (B[#B] and B[#B].inter.id or "")
+	local stale = not c or c.asTarget ~= asTarget or c.src ~= src or c.frames <= 0 or c.groupKey ~= groupKey
+		or (lookBody and not c.bodyIds[lookBody.id])
+	if not stale then
+		c.frames = c.frames - 1
+		return c.list
+	end
+
+	local bodies, bodyIds = {}, {}
+	local function addCreation(body)
+		if not (body and sm.exists(body)) or bodyIds[body.id] then return end
+		for _, b in ipairs(body:getCreationBodies()) do
+			if not bodyIds[b.id] then
+				bodyIds[b.id] = true
+				bodies[#bodies + 1] = b
+			end
+		end
+	end
+	if lookBody then
+		addCreation(lookBody)
+	elseif c then
+		for _, b in ipairs(c.bodies) do addCreation(b) end
+	end
+	if src then addCreation(src:getShape().body) end
+
+	local list = {}
+	local g = asTarget and "B" or "A"
+	if #self.cl.groups[g] > 0 then
+		for _, e in ipairs(self.cl.groups[g]) do
+			if sm.exists(e.inter) and e.inter ~= src then list[#list + 1] = e.inter end
+		end
+	else
+		for _, b in ipairs(bodies) do
+			if sm.exists(b) then
+				for _, inter in ipairs(b:getInteractables()) do
+					if inter ~= src and isLogicCapable(inter) and self:cl_wireAllowed(inter, asTarget) then
+						list[#list + 1] = inter
+					end
+				end
+			end
+		end
+	end
+	if #list > DOT_MAX then
+		local cam = sm.camera.getPosition()
+		local dist = {}
+		for _, inter in ipairs(list) do dist[inter] = (inter:getShape().worldPosition - cam):length() end
+		table.sort(list, function(x, y) return dist[x] < dist[y] end)
+		for i = #list, DOT_MAX + 1, -1 do list[i] = nil end
+	end
+	local set = {}
+	for _, inter in ipairs(list) do set[inter] = true end
+	self.cl.wireCache = { asTarget = asTarget, src = src, bodies = bodies, bodyIds = bodyIds,
+		list = list, set = set, frames = DOT_REFRESH, groupKey = groupKey }
+	return list
+end
+
+-- The part you're aiming at: the one under the crosshair if it may be picked,
+-- else the dot nearest the crosshair (within DOT_SNAP; nearer parts win ties).
+function LogicTool:cl_wireAimAt(list, lookInter)
+	local c = self.cl.wireCache
+	if lookInter and c and c.set[lookInter] and sm.exists(lookInter) then return lookInter end
+	local cam, dir = sm.camera.getPosition(), sm.camera.getDirection()
+	local best, bestOff, bestT
+	for _, inter in ipairs(list) do
+		if sm.exists(inter) then
+			local v = inter:getShape().worldPosition - cam
+			local t = v:dot(dir)
+			if t > 0.1 and t < RANGE then
+				local off = (v - dir * t):length() / t
+				if off < DOT_SNAP and (not best or off < bestOff - 0.005 or (off < bestOff + 0.005 and t < bestT)) then
+					best, bestOff, bestT = inter, off, t
+				end
+			end
+		end
+	end
+	return best
+end
+
+function LogicTool:cl_wireTo(src, inter, label)
+	self:cl_sendOps({ { kind = "flip", p = src, c = inter } }, label)
+end
+
+-- Left button down. No source: pick the part you aim at (hold and drag to wire
+-- it). A source picked (by an earlier click): wire it to the part you aim at,
+-- or drop it when you click the source itself.
+function LogicTool:cl_wirePress(aim, lookInter)
+	local src = self:cl_wireSource()
+	if src then
+		if lookInter == src and not aim then
+			self:cl_setWireSource(nil)
+			sm.audio.play("ConnectTool - Released")
+		elseif aim then
+			self:cl_wireTo(src, aim, "Wire click")
+		end
+	elseif aim then
+		self:cl_setWireSource(aim)
+		self.cl.wireDrag = { dir = sm.camera.getDirection() }
+		sm.audio.play("ConnectTool - Selected")
 	end
 end
 
-function LogicTool:cl_wireHint(inter)
+-- Left button up after picking a source. Dragged: wire to the part you let go
+-- on (nothing there cancels) and drop the source, like the connect tool. Not
+-- dragged: it was a click, so the source stays picked for clicking targets.
+function LogicTool:cl_wireRelease(aim)
+	local drag = self.cl.wireDrag
+	self.cl.wireDrag = nil
 	local src = self:cl_wireSource()
-	if not inter then
-		return src and "Click a part to wire the source to" or "Click a part to wire from"
+	if not (drag and src) then return end
+	if (sm.camera.getDirection() - drag.dir):length() < WIRE_DRAG_TURN then return end
+	if aim then self:cl_wireTo(src, aim, "Wire drag") end
+	self:cl_setWireSource(nil)
+	if not aim then sm.audio.play("ConnectTool - Released") end
+end
+
+function LogicTool:cl_wireHint(aim)
+	local src = self:cl_wireSource()
+	local function verb()
+		return containsInter(src:getChildren(LOGIC), aim) and "#ff6060Cut#ffffff source > this" or "Connect source > this"
 	end
-	if not src then return "Wire from this part" end
-	if src == inter then return "Drop the source" end
-	return containsInter(src:getChildren(LOGIC), inter) and "#ff6060Cut#ffffff source > this" or "Connect source > this"
+	if self.cl.wireDrag then
+		return aim and ("Let go: " .. verb()) or "Let go on a dot to wire (elsewhere cancels)"
+	end
+	if src then
+		return aim and verb() or "Click a dot to wire the source to"
+	end
+	if aim then return "Wire from this part (click, or drag to a dot)" end
+	return #self.cl.groups.A > 0 and ("Aim at a dot in " .. GROUP_HEX.A .. "A#ffffff to wire from")
+		or "Aim at a dot to wire from"
+end
+
+-- Dots on the parts you can pick: grey, the one you aim at yellow (bigger), the
+-- source green. Each sits on the side of its part that faces you and is sized
+-- to its part, so it shrinks with distance like the parts do.
+function LogicTool:cl_drawDots()
+	local n = 0
+	local src = self:cl_wireSource()
+	local list = self.cl.wireList
+	if list and not self.cl.debug and not self.cl.logView then
+		local cam = sm.camera.getPosition()
+		local aim = self.cl.wireAim
+		local function dot(inter, color, grow)
+			if not (inter and sm.exists(inter)) then return end
+			local shape = inter:getShape()
+			if not (shape and sm.exists(shape)) then return end
+			n = n + 1
+			local e = self.cl.dots[n]
+			if not (e and sm.exists(e)) then
+				e = sm.effect.createEffect("ShapeRenderable")
+				e:setParameter("uuid", DOT_UUID)
+				self.cl.dots[n] = e
+			end
+			local centre = shape.worldPosition
+			local toCam = cam - centre
+			local dist = toCam:length()
+			local bb = shape:getBoundingBox()
+			local push = math.max(bb.x, bb.y, bb.z) * 0.5 + 0.02
+			local pos = dist > push + 0.05 and (centre + toCam * (push / dist)) or centre
+			-- a fixed size in the world, like the parts: smaller on screen further away
+			local size = math.min(bb.x, bb.y, bb.z) * DOT_SIZE * (grow or 1)
+			e:setParameter("color", color)
+			e:setPosition(pos)
+			e:setScale(sm.vec3.new(size, size, size))
+			if not e:isPlaying() then e:start() end
+		end
+		-- the source and the aim first, so the DOT_MAX limit never drops them
+		dot(src, COLOR_DOT_PICKED, DOT_HOVER_GROW)
+		if aim ~= src then dot(aim, COLOR_DOT_HOVER, DOT_HOVER_GROW) end
+		for _, inter in ipairs(list) do
+			if n >= DOT_MAX + 2 then break end
+			if inter ~= aim and inter ~= src then dot(inter, COLOR_DOT) end
+		end
+	end
+	for i = n + 1, #self.cl.dots do
+		local e = self.cl.dots[i]
+		if e and sm.exists(e) and e:isPlaying() then e:setScale(HIDDEN_SCALE) end
+	end
 end
 
 ---------------------------------------------------------------------------

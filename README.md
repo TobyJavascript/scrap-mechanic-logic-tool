@@ -6,17 +6,20 @@ creations faster.
 ## Features
 
 - **Groups**: select logic parts into groups A, B, C… by clicking or box
-  dragging. Press Q to switch the box between full 3D and an XY, XZ or YZ layer,
-  like the game's block drag. Parts show their order number in the group.
+  dragging. Press Q while dragging to switch the box between full 3D and an
+  XY, XZ or YZ layer, like the game's block drag. Parts show their order
+  number in the group.
 - **Bulk wiring**: wire A to B all-to-all or zip (A0→B0, A1→B1…), or chain
   the active group. Ring chains it and closes the loop (3+ parts), and Self
   wires each part to itself, which turns a group of XORs into memory cells.
   A mode dropdown picks whether those buttons connect, cut or flip (toggle)
   the wires. You can also clear the active group's inputs or outputs, and
   Undo reverts the last action.
-- **Wire click mode and log**: switch clicks from selecting to wiring, and
-  TobyWand works like the game's connect tool (pick a source, click the parts
-  it feeds, click again to cut). Every wire change made with the tool is
+- **Wire click mode and log**: Q switches clicks between selecting and
+  wiring. In wire mode TobyWand works like the game's connect tool: drag from
+  part to part, or pick a source and click the parts it feeds (again to cut).
+  Dots mark the parts you can wire, and groups A and B limit where wiring
+  starts and ends. Every wire change made with the tool is
   logged; View log steps through the entries in the world (green arrows for
   wires added, red for removed) and can undo any entry, not only the last.
 - **Bulk edit**: set every gate in the active group to one mode (AND, XOR…)

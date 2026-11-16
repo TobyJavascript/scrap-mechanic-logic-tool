@@ -51,6 +51,19 @@
 			"physicsMaterial": "Default",
 			"rotationSet": "Default",
 			"showInInventory": false
+		},
+		{
+			"uuid": "5b1e6c2a-8d4f-4b7e-9c3a-1f2e7d6a4c06",
+			"name": "logictool_dot",
+			"box": {
+				"x": 1,
+				"y": 1,
+				"z": 1
+			},
+			"renderable": "$CONTENT_DATA/Objects/Renderable/logictool_dot.rend",
+			"physicsMaterial": "Default",
+			"rotationSet": "Default",
+			"showInInventory": false
 		}
 	]
 }

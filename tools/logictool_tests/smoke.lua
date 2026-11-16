@@ -468,7 +468,9 @@ check("C has timer+light", #tool.cl.groups.C == 2, #tool.cl.groups.C)
 -- layer box select (Q): XY layer through the timer, dragged to where the view
 -- ray (from (0,-2,0) along +Y) crosses z = 0 -- at y = 0, so the box only reaches
 -- the timer row; then 3D again
-step("Q to XY layer", function() tool:client_onToggle() end)
+-- Q changes the box mode only while the button is held (a box drag)
+local function qHeld() lookAt(timer) tool:client_onEquippedUpdate(S.start, S.null, false) tool:client_onToggle() end
+step("Q to XY layer", function() qHeld() end)
 check("box mode xy", tool.cl.boxMode == 2 and alerts[#alerts]:find("XY", 1, true), alerts[#alerts])
 step("layer drag", function()
 	tool:cl_clearGroup("C")
@@ -490,7 +492,7 @@ step("layer drag along the layer is ignored", function()
 	tool:client_onEquippedUpdate(S.hold, S.null, false)
 	tool:client_onEquippedUpdate(S.stop, S.null, false)
 end)
-step("Q cycles back to 3D", function() tool:client_onToggle() tool:client_onToggle() tool:client_onToggle() end)
+step("Q cycles back to 3D", function() qHeld() tool:client_onToggle() tool:client_onToggle() tool.cl.press = nil end)
 check("box mode 3d", tool.cl.boxMode == 1)
 step("restore C", function()
 	tool:cl_clearGroup("C")
@@ -1046,7 +1048,7 @@ step("settings: change some", function()
 	press("lutCompress")             -- Stacked
 	tool:cl_onDebugSpeedChanged(nil, "0,5")
 	press("labels")                  -- Order > Type
-	tool:client_onToggle()           -- box mode XY ... (next)
+	tool.cl.press = {} tool:client_onToggle() tool.cl.press = nil -- button held: box mode XY ... (next)
 	tool:cl_onDebugInputsChanged(nil, "101")
 end)
 local boxWas = tool.cl.boxMode
@@ -1265,6 +1267,98 @@ step("log: clear", function() press("logClear") end)
 check("log: cleared", #tool.cl.log == 0 and (tool.cl.gui.texts.logList or ""):find("Nothing logged yet", 1, true))
 step("log: view empty", function() press("logView") end)
 check("log: empty refused", tool.cl.logView == nil)
+-- Click: Wire: dragging from dot to dot, the dots, the group limits, snapping
+local function frame(inter, primary)
+	lookAt(inter)
+	tool:client_onEquippedUpdate(primary or S.null, S.null, false)
+	tool:client_onUpdate(0.016)
+end
+local function dotsShown(color)
+	local n = 0
+	for _, e in ipairs(tool.cl.dots) do
+		if SHOWN(e) and (not color or tostring(e.color) == color) then n = n + 1 end
+	end
+	return n
+end
+-- the mock effect keeps its colour, so the tests can check it
+local setParam = Effect.setParameter
+Effect.setParameter = function(self, k, v)
+	if k == "color" then self.color = v end
+	return setParam(self, k, v)
+end
+local DR
+local function drag(from, to)
+	CAM.dir = vec(0, 1, 0)
+	frame(from, S.start)
+	CAM.dir = vec(0.2, 1, 0)                     -- turn while holding
+	frame(to, S.hold)
+	frame(to, S.stop)
+	CAM.dir = vec(0, 1, 0)
+end
+step("drag: setup", function()
+	press("closeLog") tool.cl.gui:close()
+	tool:cl_dd_clickMode("Click: Wire")
+	press("clearAll")
+	local nb = setmetatable({ id = newId(), worldPosition = vec(0, 0, 0), worldRotation = quat(), shapes = {} }, Body)
+	nb.creation = { nb }
+	DR = {
+		sw = addPart(UUID_SWITCH, 40, 0, 0, nil, nil, nb),
+		g1 = addPart(UUID_GATE, 40, 2, 0, { mode = 0 }, nil, nb),
+		g2 = addPart(UUID_GATE, 40, 4, 0, { mode = 1 }, nil, nb),
+		light = addPart(UUID_LIGHT, 40, 6, 0, nil, nil, nb),
+		logWas = #tool.cl.log,
+		cam = { pos = CAM.pos, dir = CAM.dir },
+	}
+	frame(DR.sw)
+end)
+check("dots: on every part that can be wired from (not the lamp)", dotsShown() == 3, dotsShown())
+check("dots: the part you look at is aimed at, yellow", tool.cl.wireAim == DR.sw and dotsShown("ffd23cff") == 1)
+step("drag: switch to g1", function() drag(DR.sw, DR.g1) end)
+check("drag: wired, source dropped", #DR.sw.children == 1 and DR.sw.children[1] == DR.g1 and tool.cl.wireSource == nil)
+check("drag: logged as a drag", #tool.cl.log == DR.logWas + 1 and (tool.cl.log[#tool.cl.log] or {}).label == "Wire drag"
+	and (tool.cl.log[#tool.cl.log] or {}).made == 1, (tool.cl.log[#tool.cl.log] or {}).label)
+step("drag: hold on the switch", function() CAM.dir = vec(0, 1, 0) frame(DR.sw, S.start) CAM.dir = vec(0.2, 1, 0) frame(DR.g2, S.hold) end)
+check("drag: while dragging, dots on targets (g1, g2, lamp) and the green source", dotsShown() == 4
+	and dotsShown("40ff60ff") == 1 and tool.cl.wireAim == DR.g2, dotsShown())
+check("drag: a line follows to the aimed part", (function()
+	for _, l in ipairs(tool.cl.lines) do if SHOWN(l) and tostring(l.color) == "ffd23cff" then return true end end
+end)())
+step("drag: let go on nothing", function() frame(nil, S.stop) CAM.dir = vec(0, 1, 0) end)
+check("drag: cancelled, nothing wired, source dropped", #DR.sw.children == 1 and tool.cl.wireSource == nil
+	and #tool.cl.log == DR.logWas + 1)
+step("drag: again onto g1 cuts", function() drag(DR.sw, DR.g1) end)
+check("drag: cut like the connect tool", #DR.sw.children == 0 and (tool.cl.log[#tool.cl.log] or {}).cut == 1)
+step("click still works: click switch, click g2", function() clickAt(DR.sw) clickAt(DR.g2) end)
+check("click: wired, source kept", #DR.sw.children == 1 and DR.sw.children[1] == DR.g2 and tool.cl.wireSource ~= nil)
+step("click: drop the source", function() clickAt(nil, true) end)
+step("groups: A = g1", function() setGroup("A", { DR.g1 }) frame(DR.sw) end)
+check("groups: only A gets dots, the switch can't be picked", dotsShown() == 1 and tool.cl.wireAim == nil)
+step("groups: B = g2, drag g1 to the lamp", function() setGroup("B", { DR.g2 }) drag(DR.g1, DR.light) end)
+check("groups: the lamp isn't in B, nothing wired", #DR.g1.children == 0 and tool.cl.wireSource == nil)
+step("groups: drag g1 to g2", function() drag(DR.g1, DR.g2) end)
+check("groups: wired into B", #DR.g1.children == 1 and DR.g1.children[1] == DR.g2)
+step("snap: aim just beside g1, at nothing", function()
+	setGroup("A", {}) setGroup("B", {})
+	local p = DR.g1.shape.worldPosition
+	CAM.pos, CAM.dir = vec(p.x - 2, p.y, p.z + 0.04), vec(1, 0, 0)
+	frame(DR.g1) frame(nil)
+end)
+check("snap: the dot near the crosshair is aimed at", tool.cl.wireAim == DR.g1, tool.cl.wireAim and tool.cl.wireAim.id)
+step("snap: aim well away", function() local p = DR.g1.shape.worldPosition CAM.pos = vec(p.x - 2, p.y, p.z + 0.5) frame(nil) end)
+check("snap: too far from every dot, nothing aimed", tool.cl.wireAim == nil)
+step("Q: not dragging, switches to select", function() frame(nil) tool:client_onToggle() end)
+check("Q: select mode, box mode unchanged", tool.cl.clickMode == 1 and alerts[#alerts]:find("Click: Select", 1, true)
+	and tool.cl.ddShown.clickMode == "Click: Select", alerts[#alerts])
+step("Q: again, back to wire", function() tool:client_onToggle() end)
+check("Q: wire mode", tool.cl.clickMode == 2 and alerts[#alerts]:find("Click: Wire", 1, true))
+step("Q: wire mode with a source picked, switch to select", function() clickAt(DR.sw) tool:client_onToggle() end)
+check("Q: the source is dropped", tool.cl.clickMode == 1 and tool.cl.wireSource == nil)
+step("Q: back to wire for the last test", function() tool:client_onToggle() end)
+step("drag: back to select hides the dots", function()
+	CAM.pos, CAM.dir = DR.cam.pos, DR.cam.dir
+	tool:cl_dd_clickMode("Click: Select") frame(nil)
+end)
+check("dots: none shown in select mode", dotsShown() == 0)
 step("wire: back to select", function() tool:cl_dd_clickMode("Click: Select") press("closeLog") tool.cl.gui:close() end)
 check("wire: select mode", tool.cl.clickMode == 1 and tool.cl.wireSource == nil)
 

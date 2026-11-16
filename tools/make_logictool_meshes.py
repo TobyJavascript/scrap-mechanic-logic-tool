@@ -7,6 +7,7 @@ the game's meshes (same convention as make_gears.py). Both fill a 1x1x1 block:
   logictool_wire.obj   smooth round tube, radius 0.5, y -0.5 .. 0.5, no caps
   logictool_arrow.obj  smooth cone, base radius 0.5 at y=-0.5, tip at y=0.5
   logictool_frame.obj  the 12 edges of a 1x1x1 box (selection frame)
+  logictool_dot.obj    smooth sphere, radius 0.5 (wire mode dots)
 
 The tool scales them per connection (ShapeRenderable scale s = s metres).
 
@@ -129,8 +130,34 @@ def frame():
           "# TobyWand selection frame: 12 edges of a box -0.5..0.5 (blocks)\n")
 
 
+DOT_RINGS = 8   # latitude bands; SIDES around
+
+
+def dot():
+    v, n, t, f = [], [], [], []
+    for r in range(DOT_RINGS + 1):
+        lat = math.pi * r / DOT_RINGS - math.pi / 2      # -90 .. 90 degrees
+        y, rad = math.sin(lat), math.cos(lat)
+        for i in range(SIDES + 1):
+            c, s = ring(i)
+            v.append((0.5 * rad * c, 0.5 * y, 0.5 * rad * s))
+            n.append((rad * c, y, rad * s))            # smooth: points outward
+            t.append((i / SIDES, r / DOT_RINGS))
+    row = SIDES + 1
+    for r in range(DOT_RINGS):
+        for i in range(SIDES):
+            a = r * row + i + 1                          # this band, 1-based
+            b = a + row                                  # the band above
+            # counter-clockwise seen from outside
+            f.append((a, b, b + 1))
+            f.append((a, b + 1, a + 1))
+    write(os.path.join(OUT, "logictool_dot.obj"), v, n, t, f,
+          "# TobyWand wire mode dot: sphere r=0.5 (blocks)\n")
+
+
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     wire()
     arrow()
     frame()
+    dot()
