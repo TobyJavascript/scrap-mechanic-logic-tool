@@ -3737,30 +3737,39 @@ function LogicTool:cl_rebuildMarkers()
 end
 
 function LogicTool:cl_hideWorldVisuals()
+	-- group frames are destroyed too: cl_rebuildMarkers makes them new
 	for _, g in ipairs(GROUPS) do
 		for _, eff in pairs(self.cl.markers[g]) do
-			if sm.exists(eff) then eff:stop() end
+			if sm.exists(eff) then eff:destroy() end
 		end
+		self.cl.markers[g] = {}
 	end
 	for _, f in pairs(self.cl.flags) do
 		if sm.exists(f.effect) then f.effect:stop() end
 	end
 	if self.cl.hover then self.cl.hover:stop() end
 	if self.cl.box then self.cl.box:stop() end
+	-- Lines, dots and labels are drawn again every frame, so they are destroyed
+	-- here and made new when the tool is back in hand. Stopping them and starting
+	-- them again soon after (a quick put away and take out) can leave them
+	-- hidden for good while the game says they play.
 	for _, l in ipairs(self.cl.lines) do
-		if sm.exists(l) then l:stop() end
+		if sm.exists(l) then l:destroy() end
 	end
+	self.cl.lines, self.cl.lineUuid = {}, {}
 	for _, lab in ipairs(self.cl.labels) do
-		lab:close()
+		pcall(lab.destroy, lab)
 	end
+	self.cl.labels, self.cl.labelTexts = {}, {}
 	for _, e in ipairs(self.cl.debugFrames) do
 		if sm.exists(e) then e:stop() end
 	end
 	local src = self.cl.wireSource
 	if src and sm.exists(src.effect) then src.effect:stop() end
 	for _, e in ipairs(self.cl.dots) do
-		if sm.exists(e) then e:stop() end
+		if sm.exists(e) then e:destroy() end
 	end
+	self.cl.dots = {}
 end
 
 function LogicTool:cl_clearAllVisuals()

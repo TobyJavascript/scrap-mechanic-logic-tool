@@ -162,11 +162,13 @@ for _, m in ipairs({ "setParameter", "setPosition", "setRotation", "setScale", "
 	Effect[m] = function(self, ...) assert(not self.destroyed, "use of destroyed effect: " .. m) end
 end
 function Effect:setScale(v) assert(not self.destroyed, "use of destroyed effect: setScale") self.scale = v end
-function Effect:start() assert(not self.destroyed) self.playing = true end
-function Effect:stop() self.playing = false end
+-- like the game: an effect stopped and started again can stay hidden while it
+-- says it plays (ghost), so code must not rely on stop + start
+function Effect:start() assert(not self.destroyed) if self.wasStopped then self.ghost = true end self.playing = true end
+function Effect:stop() if self.playing then self.wasStopped = true end self.playing = false end
 function Effect:isPlaying() return self.playing end
--- on screen: playing and not shrunk away (unused line pieces stay playing)
-function SHOWN(e) return e.playing and not (e.scale and e.scale.x < 0.001) end
+-- on screen: playing, not a ghost and not shrunk away (unused line pieces stay playing)
+function SHOWN(e) return e.playing and not e.ghost and not (e.scale and e.scale.x < 0.001) end
 function Effect:destroy() self.destroyed = true end
 
 local Gui = {}
@@ -1396,6 +1398,30 @@ check("hidden after unequip", (function()
 	for _, e in ipairs(tool.cl.lines) do if SHOWN(e) then return false end end
 	return true
 end)())
+step("taken out again at once: lines come back", function()
+	tool.cl.allWires = nil
+	tool:client_onUpdate(0.016)
+end)
+check("lines shown again after a quick put away", (function()
+	local n = 0
+	for _, e in ipairs(tool.cl.lines) do if SHOWN(e) then n = n + 1 end end
+	return n > 0, n
+end)())
+step("groups for the frame check", function()
+	local nb = setmetatable({ id = newId(), worldPosition = vec(0, 0, 0), worldRotation = quat(), shapes = {} }, Body)
+	nb.creation = { nb }
+	local g = addPart(UUID_GATE, 60, 0, 0, { mode = 0 }, nil, nb)
+	tool:cl_add("A", g, g:getShape())
+	tool:client_onUnequip() tool:client_onUpdate(0.016)
+	tool.tool.isEquipped = function() return false end tool:client_onUpdate(0.016)
+	tool.tool.isEquipped = function() return true end tool:client_onUpdate(0.016)
+end)
+check("group frames shown again after a put away", (function()
+	local n = 0
+	for _, e in pairs(tool.cl.markers.A) do if SHOWN(e) then n = n + 1 end end
+	return #tool.cl.groups.A == 1 and n == 1, n
+end)())
+step("unequip again", function() tool:client_onUnequip() end)
 step("update while unequipped", function()
 	tool.tool.isEquipped = function() return false end
 	tool:client_onUpdate(0.016)
