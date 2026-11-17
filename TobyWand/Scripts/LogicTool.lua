@@ -1507,7 +1507,7 @@ function LogicTool:client_onCreate()
 		lineUuid = {},                         -- mesh shown by each pooled effect
 		labels = {},                           -- world gui pool
 		labelMode = 2,                         -- order numbers (A0, A1 ...) by default
-		showLines = false,
+		showLines = true,
 		typeLabels = {},                       -- [interId] = "AND"
 		partInfo = {},                         -- [interId] = { kind, mode, delay } for scripts
 		delayLabels = {},                      -- [interId] = "3t" / "2-5t"
@@ -2070,6 +2070,7 @@ function LogicTool:client_onEquippedUpdate(primary, secondary, forceBuild)
 	end
 
 	local pos, shape, inter = self:cl_raycast()
+	if shape and sm.exists(shape) then self.cl.lookShape = shape end -- Lines: whose wires to show
 	local logicInter = inter and isLogicCapable(inter) and inter or nil
 	self.cl.hoverInter = logicInter
 
@@ -3871,12 +3872,14 @@ function LogicTool:cl_updateLines()
 		end
 		n = self:cl_connection(n, from, to, aim and COLOR_DOT_HOVER or COLOR_DOT, DRAG_ARROW_GAP)
 	end
+	local done = {} -- wires already drawn, so Lines doesn't draw them again
 	if src then
 		-- Click: Wire: what the source feeds now
 		local from = src:getShape().worldPosition
 		for _, c in ipairs(src:getChildren(LOGIC)) do
 			if n > MAX_LINES - 1 then break end
 			local cs = c:getShape()
+			done[src.id .. ">" .. c.id] = true
 			if cs and sm.exists(cs) then
 				local start = from
 				if (cs.worldPosition - from):length() < 0.05 then start = cs.worldPosition + DEBUG_LOOP_RISE end
@@ -3885,7 +3888,6 @@ function LogicTool:cl_updateLines()
 		end
 	end
 	if self.cl.showLines and not view and not lv then
-		local done = {}
 		local function draw(p, c)
 			if n > MAX_LINES - 1 then return end
 			local key = p.id .. ">" .. c.id
@@ -3896,14 +3898,20 @@ function LogicTool:cl_updateLines()
 				n = self:cl_connection(n, ps.worldPosition, cs.worldPosition, p:isActive() and COLOR_ON or COLOR_OFF)
 			end
 		end
+		local any = false
 		for _, g in ipairs(GROUPS) do
 			for _, e in ipairs(self.cl.groups[g]) do
+				any = true
 				local inter = e.inter
 				if sm.exists(inter) then
 					for _, c in ipairs(inter:getChildren(LOGIC)) do draw(inter, c) end
 					for _, p in ipairs(inter:getParents(LOGIC)) do draw(p, inter) end
 				end
 			end
+		end
+		if not any then
+			-- no groups: every wire on the creation you look at (or last looked at)
+			for _, w in ipairs(self:cl_allWires()) do draw(w[1], w[2]) end
 		end
 	end
 
@@ -3924,6 +3932,41 @@ function LogicTool:cl_updateLines()
 		local e = self.cl.lines[i]
 		if e and sm.exists(e) and e:isPlaying() then e:setScale(HIDDEN_SCALE) end
 	end
+end
+
+-- Lines with no groups: the wires of the creation last looked at, nearest
+-- first, as many as the line pool can draw. Found again every few frames.
+function LogicTool:cl_allWires()
+	local c = self.cl.allWires
+	local look = self.cl.lookShape
+	local body = look and sm.exists(look) and look.body or nil
+	if c and c.frames > 0 and (not body or c.bodyIds[body.id]) then
+		c.frames = c.frames - 1
+		return c.list
+	end
+	if not body then return c and c.list or {} end
+	local bodyIds, pairs_ = {}, {}
+	for _, b in ipairs(body:getCreationBodies()) do
+		bodyIds[b.id] = true
+		for _, inter in ipairs(b:getInteractables()) do
+			if isLogicCapable(inter) then
+				for _, ch in ipairs(inter:getChildren(LOGIC)) do pairs_[#pairs_ + 1] = { inter, ch } end
+			end
+		end
+	end
+	local keep = math.floor(MAX_LINES / 2)
+	if #pairs_ > keep then
+		local cam = sm.camera.getPosition()
+		local dist = {}
+		for _, w in ipairs(pairs_) do
+			local ps, cs = w[1]:getShape(), w[2]:getShape()
+			dist[w] = (ps and cs) and ((ps.worldPosition + cs.worldPosition) * 0.5 - cam):length() or math.huge
+		end
+		table.sort(pairs_, function(x, y) return dist[x] < dist[y] end)
+		for i = #pairs_, keep + 1, -1 do pairs_[i] = nil end
+	end
+	self.cl.allWires = { list = pairs_, bodyIds = bodyIds, frames = DOT_REFRESH }
+	return pairs_
 end
 
 function LogicTool:cl_label(i, pos, text)
@@ -4257,8 +4300,14 @@ function LogicTool:cl_wireAimAt(list, lookInter)
 	return best
 end
 
+-- Like the connect tool: wired already cuts it, and a wire the other way
+-- (the game allows only one direction) is cut too.
 function LogicTool:cl_wireTo(src, inter, label)
-	self:cl_sendOps({ { kind = "flip", p = src, c = inter } }, label)
+	if containsInter(inter:getChildren(LOGIC), src) then
+		self:cl_sendOps({ { kind = "cut", p = inter, c = src } }, label)
+	else
+		self:cl_sendOps({ { kind = "flip", p = src, c = inter } }, label)
+	end
 end
 
 -- Left button down. No source: pick the part you aim at (hold and drag to wire
@@ -4297,7 +4346,9 @@ end
 function LogicTool:cl_wireHint(aim)
 	local src = self:cl_wireSource()
 	local function verb()
-		return containsInter(src:getChildren(LOGIC), aim) and "#ff6060Cut#ffffff source > this" or "Connect source > this"
+		if containsInter(src:getChildren(LOGIC), aim) then return "#ff6060Cut#ffffff source > this" end
+		if containsInter(aim:getChildren(LOGIC), src) then return "#ff6060Cut#ffffff this > source" end
+		return "Connect source > this"
 	end
 	if self.cl.wireDrag then
 		return aim and ("Let go: " .. verb()) or "Let go on a dot to wire (elsewhere cancels)"

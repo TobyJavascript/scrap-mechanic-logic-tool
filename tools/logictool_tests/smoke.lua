@@ -239,7 +239,7 @@ sm = {
 		createWorldIconGui = function() return newGui() end,
 		displayAlertText = function(t) alerts[#alerts + 1] = t end,
 		chatMessage = function(t) chats[#chats + 1] = t end,
-		setInteractionText = function(...) for i = 1, select("#", ...) do assert(type(select(i, ...)) == "string") end end,
+		setInteractionText = function(...) for i = 1, select("#", ...) do assert(type(select(i, ...)) == "string") end sm.gui.lastInteraction = table.concat({ ... }, " ") end,
 		getKeyBinding = function(n) return "[" .. n .. "]" end,
 	},
 	audio = { play = function() end },
@@ -668,7 +668,8 @@ step("type labels: missing ones are fetched", function()
 end)
 check("type label fetched", labelFor(switch1) ~= nil and labelFor(switch1) ~= "...", tostring(labelFor(switch1)))
 step("type labels back to order", function() for _ = 1, 3 do press("labels") end tool:client_onUpdate(0.3) end)
-step("lines on", function() press("lines") tool:client_onUpdate(0.016) end)
+check("lines on by default", tool.cl.showLines == true)
+step("lines off and on", function() press("lines") press("lines") tool:client_onUpdate(0.016) end)
 check("line effects drawn", (function()
 	local n = 0
 	for _, e in ipairs(tool.cl.lines) do if SHOWN(e) then n = n + 1 end end
@@ -1187,6 +1188,12 @@ step("wire: click g1 again cuts", function() clickAt(DBG.g1) end)
 check("wire: cut like the connect tool", #DBG.sw.children == 1 and DBG.sw.children[1] == DBG.g2 and tool.cl.log[#tool.cl.log].cut == 1)
 step("wire: right click drops the source", function() clickAt(nil, true) end)
 check("wire: source dropped, group unchanged", tool.cl.wireSource == nil and tool.cl.active == "A")
+step("lines: no groups, draw", function() tool.cl.allWires = nil tool:client_onUpdate(0.016) end)
+check("lines: no groups shows the creation's wires", (function()
+	local n = 0
+	for _, e in ipairs(tool.cl.lines) do if SHOWN(e) then n = n + 1 end end
+	return #tool.cl.groups.A == 0 and #tool.cl.groups.B == 0 and n >= 2, n
+end)())
 step("log: window", function() tool.cl.gui:open() press("openLog") end)
 check("log: list newest first", tool.cl.gui.visible.logWindow == true and tool.cl.gui.texts.openLogText == "Hide log"
 	and (tool.cl.gui.texts.logList or ""):find("#" .. tool.cl.log[#tool.cl.log].id .. "  Wire click: #ff6060cut 1", 1, true), tool.cl.gui.texts.logList)
@@ -1219,6 +1226,17 @@ step("log: R stops", function() tool:client_onReload() end)
 check("log: stopped, menu open, frames gone", tool.cl.logView == nil and tool.cl.gui:isActive() and #tool.cl.debugFrames == 0)
 step("log: the Undo button undoes the entry undo", function() press("undo") end)
 check("log: sw > g2 back", #DBG.sw.children == 1 and DBG.sw.children[1] == DBG.g2)
+step("wire: g1 > g2, then aim g2 at g1", function()
+	tool.cl.gui:close()
+	clickAt(DBG.g1) clickAt(DBG.g2) clickAt(nil, true)
+	clickAt(DBG.g2) lookAt(DBG.g1) tool:client_onEquippedUpdate(S.null, S.null, false)
+end)
+check("wire: hint says the reverse wire is cut", (sm.gui.lastInteraction or ""):find("Cut#ffffff this > source", 1, true)
+	and DBG.g1.children[1] == DBG.g2, sm.gui.lastInteraction)
+step("wire: click g1", function() clickAt(DBG.g1) clickAt(nil, true) end)
+check("wire: the reverse wire is cut, nothing made", #DBG.g1.children == 0 and #DBG.g2.children == 0
+	and tool.cl.log[#tool.cl.log].cut == 1 and tool.cl.log[#tool.cl.log].made == 0, #DBG.g2.children)
+step("wire: back to the menu", function() tool.cl.gui:open() end)
 step("log: a button entry names its mode", function()
 	tool.cl.groups.A, tool.cl.groups.B = {}, {}
 	tool:cl_add("A", DBG.sw, DBG.sw.shape) tool:cl_add("B", DBG.g1, DBG.g1.shape)
