@@ -162,6 +162,15 @@ for _, m in ipairs({ "setParameter", "setPosition", "setRotation", "setScale", "
 	Effect[m] = function(self, ...) assert(not self.destroyed, "use of destroyed effect: " .. m) end
 end
 function Effect:setScale(v) assert(not self.destroyed, "use of destroyed effect: setScale") self.scale = v end
+-- counts moves, to check a still frame tells the line and dot effects nothing
+function Effect:setPosition(v) assert(not self.destroyed, "use of destroyed effect: setPosition") self.moves = (self.moves or 0) + 1 end
+function POOL_MOVES(tool)
+	local n = 0
+	for _, list in ipairs({ tool.cl.lines, tool.cl.dots }) do
+		for _, e in ipairs(list) do n = n + (e.moves or 0) end
+	end
+	return n
+end
 -- like the game: an effect stopped and started again can stay hidden while it
 -- says it plays (ghost), so code must not rely on stop + start
 function Effect:start() assert(not self.destroyed) if self.wasStopped then self.ghost = true end self.playing = true end
@@ -671,6 +680,8 @@ end)
 check("type label fetched", labelFor(switch1) ~= nil and labelFor(switch1) ~= "...", tostring(labelFor(switch1)))
 step("type labels back to order", function() for _ = 1, 3 do press("labels") end tool:client_onUpdate(0.3) end)
 check("lines on by default", tool.cl.showLines == true)
+check("wire lines: 500 at most by default, shown in the box", tool:cl_maxWires() == 500 and tool.cl.gui.texts.maxWires == "500"
+	and tool.cl.gui.textCbs.maxWires == "cl_onMaxWiresChanged", tool.cl.gui.texts.maxWires)
 step("lines off and on", function() press("lines") press("lines") tool:client_onUpdate(0.016) end)
 check("line effects drawn", (function()
 	local n = 0
@@ -1053,6 +1064,7 @@ step("settings: change some", function()
 	press("labels")                  -- Order > Type
 	tool.cl.press = {} tool:client_onToggle() tool.cl.press = nil -- button held: box mode XY ... (next)
 	tool:cl_onDebugInputsChanged(nil, "101")
+	tool:cl_onMaxWiresChanged(nil, "250")
 end)
 local boxWas = tool.cl.boxMode
 check("settings: not saved at once", (FILES["$CONTENT_DATA/settings.json"] or {}).lutCompress ~= true)
@@ -1062,18 +1074,21 @@ step("settings: a moment later", function()
 end)
 local saved = FILES["$CONTENT_DATA/settings.json"]
 check("settings: saved", saved and saved.lutCompress == true and saved.debugSpeedText == "0,5" and saved.labelMode == "type"
-	and saved.boxMode == BOX_NAME_OF(boxWas) and saved.debugInputText == "101" and saved.script == "chain(A)" and saved.version == 1)
+	and saved.boxMode == BOX_NAME_OF(boxWas) and saved.debugInputText == "101" and saved.script == "chain(A)" and saved.version == 1
+	and saved.maxWiresText == "250")
 step("settings: new session", function()
 	local t2 = setmetatable({}, { __index = LogicTool })
 	t2.tool = tool.tool
 	t2.network = tool.network
 	t2:client_onCreate()
 	NEW_TOOL = t2
+	tool.cl.maxWiresText = "500" -- back to the default for the tests after
 end)
 check("settings: restored", NEW_TOOL and NEW_TOOL.cl.lutCompress == true and NEW_TOOL.cl.debugSpeedText == "0,5" and NEW_TOOL.cl.gui.texts.debugSpeed == "0,5"
 	and NEW_TOOL.cl.boxMode == boxWas and NEW_TOOL.cl.debugInputText == "101" and NEW_TOOL.cl.gui.texts.debugInputs == "101"
 	and NEW_TOOL.cl.script == "chain(A)" and #NEW_TOOL.cl.library == 1 and NEW_TOOL.cl.libPos == 1
-	and NEW_TOOL.cl.gui.texts.lutCompress == "Stacked")
+	and NEW_TOOL.cl.gui.texts.lutCompress == "Stacked"
+	and NEW_TOOL:cl_maxWires() == 250 and NEW_TOOL.cl.gui.texts.maxWires == "250")
 step("settings: a broken file falls back to defaults", function()
 	FILES["$CONTENT_DATA/settings.json"] = "broken"
 	local t3 = setmetatable({}, { __index = LogicTool })
@@ -1180,7 +1195,11 @@ step("wire: click g1 then g2", function() clickAt(DBG.g1) clickAt(DBG.g2) end)
 check("wire: both connected, source kept", #DBG.sw.children == 2 and tool.cl.wireSource ~= nil, #DBG.sw.children)
 check("wire: two log entries", #tool.cl.log == DBG.logWas + 2 and tool.cl.log[#tool.cl.log].label == "Wire click"
 	and tool.cl.log[#tool.cl.log].made == 1, #tool.cl.log)
-step("wire: draw", function() tool:client_onUpdate(0.016) end)
+local wireLine
+step("wire: draw", function()
+	tool:client_onUpdate(0.016)
+	wireLine = tool.cl.lines[tool.cl.linePool.slot["w" .. DBG.sw.id .. ">" .. DBG.g2.id]]
+end)
 check("wire: source arrows", (function()
 	local n = 0
 	for _, e in ipairs(tool.cl.lines) do if SHOWN(e) then n = n + 1 end end
@@ -1196,6 +1215,61 @@ check("lines: no groups shows the creation's wires", (function()
 	for _, e in ipairs(tool.cl.lines) do if SHOWN(e) then n = n + 1 end end
 	return #tool.cl.groups.A == 0 and #tool.cl.groups.B == 0 and n >= 2, n
 end)())
+check("lines: a wire keeps its own line from the source view to Lines", wireLine ~= nil and SHOWN(wireLine)
+	and tool.cl.lines[tool.cl.linePool.slot["w" .. DBG.sw.id .. ">" .. DBG.g2.id]] == wireLine)
+local BIG = {}
+local function wireKeys()
+	tool.cl.allWires.frames = 0
+	local set, n = {}, 0
+	for _, w in ipairs(tool:cl_allWires()) do set[w[1].id .. ">" .. w[2].id] = true n = n + 1 end
+	return set, n
+end
+local function sameKeys(a, b)
+	for k in pairs(a) do if not b[k] then return false end end
+	for k in pairs(b) do if not a[k] then return false end end
+	return true
+end
+step("lines: a creation with more wires than the limit", function()
+	local nb = setmetatable({ id = newId(), worldPosition = vec(0, 0, 0), worldRotation = quat(), shapes = {} }, Body)
+	nb.creation = { nb }
+	local prev
+	for i = 1, 700 do
+		local g = addPart(UUID_GATE, i, 40, 0, { mode = 0 }, nil, nb)
+		if prev then prev.children[#prev.children + 1] = g g.parents[#g.parents + 1] = prev end
+		prev = g
+		BIG[i] = g
+	end
+	BIG.look, BIG.cam = tool.cl.lookShape, CAM.pos
+	tool.cl.lookShape = BIG[1]:getShape()
+	CAM.pos = vec(87.5, 8, 0) -- the middle: the cut falls on both sides
+	tool.cl.allWires = nil
+	tool:cl_allWires()
+	BIG.first, BIG.n = wireKeys()
+	BIG.still = wireKeys()
+	CAM.pos = vec(88.5, 8, 0)
+	BIG.moved = wireKeys()
+	CAM.pos = vec(175, 8, 0)
+	BIG.far = wireKeys()
+	tool:cl_onMaxWiresChanged(nil, "100")
+	tool.cl.allWires = nil
+	tool:cl_allWires()
+	BIG.few = select(2, wireKeys())
+	tool:cl_onMaxWiresChanged(nil, "abc")
+	BIG.bad = tool:cl_maxWires()
+	tool:cl_onMaxWiresChanged(nil, "99999")
+	BIG.top = tool:cl_maxWires()
+	tool:cl_onMaxWiresChanged(nil, "0")
+	BIG.zero = tool:cl_maxWires()
+	tool:cl_onMaxWiresChanged(nil, "500")
+	tool.cl.lookShape, CAM.pos, tool.cl.allWires = BIG.look, BIG.cam, nil
+end)
+check("lines: over the limit, 500 wires drawn", BIG.n == 500, BIG.n)
+check("wire lines: the box sets how many are drawn", BIG.few == 100, BIG.few)
+check("wire lines: not a number, 0 or too many keeps it sane", BIG.bad == 500 and BIG.zero == 500 and BIG.top == 5000)
+check("lines: over the limit, standing still keeps the same wires", sameKeys(BIG.first, BIG.still))
+check("lines: over the limit, a small move keeps the same wires", sameKeys(BIG.first, BIG.moved))
+check("lines: over the limit, a long move picks the nearer wires", not sameKeys(BIG.first, BIG.far)
+	and BIG.far[BIG[690].id .. ">" .. BIG[691].id] and not BIG.first[BIG[690].id .. ">" .. BIG[691].id])
 step("log: window", function() tool.cl.gui:open() press("openLog") end)
 check("log: list newest first", tool.cl.gui.visible.logWindow == true and tool.cl.gui.texts.openLogText == "Hide log"
 	and (tool.cl.gui.texts.logList or ""):find("#" .. tool.cl.log[#tool.cl.log].id .. "  Wire click: #ff6060cut 1", 1, true), tool.cl.gui.texts.logList)
@@ -1333,6 +1407,23 @@ step("drag: setup", function()
 end)
 check("dots: on every part that can be wired from (not the lamp)", dotsShown() == 3, dotsShown())
 check("dots: the part you look at is aimed at, yellow", tool.cl.wireAim == DR.sw and dotsShown("ffd23cff") == 1)
+local dotOf = {}
+step("dots: aim moves to g2", function()
+	for _, inter in ipairs({ DR.sw, DR.g1, DR.g2 }) do
+		dotOf[inter] = tool.cl.dots[tool.cl.dotPool.slot[inter.id]]
+	end
+	frame(DR.g2)
+end)
+check("dots: every part keeps its own dot when the aim moves", (function()
+	for inter, e in pairs(dotOf) do
+		if tool.cl.dots[tool.cl.dotPool.slot[inter.id]] ~= e or not SHOWN(e) then return false end
+	end
+	return tool.cl.wireAim == DR.g2 and dotsShown() == 3
+end)())
+local setsBefore
+step("dots: a still frame", function() frame(DR.g2) setsBefore = POOL_MOVES(tool) frame(DR.g2) end)
+check("dots: a still frame tells the effects nothing", POOL_MOVES(tool) == setsBefore, POOL_MOVES(tool) - setsBefore)
+step("dots: back to the switch", function() frame(DR.sw) end)
 step("drag: switch to g1", function() drag(DR.sw, DR.g1) end)
 check("drag: wired, source dropped", #DR.sw.children == 1 and DR.sw.children[1] == DR.g1 and tool.cl.wireSource == nil)
 check("drag: logged as a drag", #tool.cl.log == DR.logWas + 1 and (tool.cl.log[#tool.cl.log] or {}).label == "Wire drag"

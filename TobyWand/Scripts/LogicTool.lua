@@ -74,7 +74,8 @@ local LINE_THICK = 0.02       -- wire diameter (m)
 local ARROW_LEN = 0.11        -- arrowhead length (m)
 local ARROW_WIDTH = 0.07     -- arrowhead base diameter (m)
 local ARROW_GAP = 0.13        -- arrow tip stops this far from the child's centre (m)
-local MAX_LINES = 400
+local MAX_WIRES = 500       -- Wire lines: wires drawn at most by default (nearest first)
+local MAX_WIRES_TOP = 5000  -- the most the setting allows
 local MAX_GROUP = 2048
 local OPS_PER_PACKET = 300
 local NET_LIST_LIMIT = 400
@@ -108,12 +109,13 @@ local COLOR_SOURCE = sm.color.new("ffffffff") -- Wire click mode: the picked sou
 local COLOR_DOT = sm.color.new("c8c8c8ff")        -- a part you can pick
 local COLOR_DOT_HOVER = sm.color.new("ffd23cff")  -- the part you're aiming at
 local COLOR_DOT_PICKED = sm.color.new("40ff60ff") -- the picked source
-local DOT_MAX = 300       -- dots drawn at most, nearest first
+local DOT_MAX = 800       -- dots drawn at most, nearest first
 local DOT_SIZE = 0.55     -- dot size as a fraction of its part (a logic gate: about 14 cm)
 local DRAG_ARROW_GAP = 0.03 -- dragging: the arrow tip stops this close to the target's centre (m)
 local DOT_HOVER_GROW = 1.5
 local DOT_SNAP = 0.04     -- aim snaps to a dot this close to the crosshair (radians, about 2 degrees)
 local DOT_REFRESH = 15    -- frames between re-reading which parts get dots
+local KEEP_MARGIN = 2     -- over the limit, a new wire or dot must be this much nearer (m) to replace a shown one
 local WIRE_DRAG_TURN = 0.02 -- the view must turn this much (about 1 degree) for a press to count as a drag
 local LOG_MAX = 200          -- wiring log entries kept per player (this session)
 local LOG_DRAW_MAX = 300     -- wires of one entry sent to the client to draw
@@ -122,6 +124,106 @@ local LOG_DRAW_MAX = 300     -- wires of one entry sent to the client to draw
 local function nowTick()
 	local ok, t = pcall(function() return sm.game.getCurrentTick() end)
 	return ok and type(t) == "number" and t or nil
+end
+
+-- Effect pools for lines and dots. Each wire or part keeps its own effect for
+-- as long as it is drawn, so nothing jumps between wires when the list order
+-- changes, and an effect is only told what changed since the last frame.
+-- Unused effects are shrunk away, not stopped: an effect stopped and started
+-- again soon after can stay hidden while the game says it plays.
+local HIDDEN_SCALE = sm.vec3.new(0.0001, 0.0001, 0.0001)
+
+local function newPool()
+	return {
+		effects = {}, -- [i] = effect
+		uuid = {},    -- [i] = mesh it shows
+		key = {},     -- [i] = what it shows now (nil: free)
+		slot = {},    -- [key] = i
+		free = {},    -- [uuid] = { i, ... } free effects with that mesh
+		state = {},   -- [i] = what it was last told
+		seen = {},    -- [i] = true once used this frame
+	}
+end
+
+local function poolBegin(p)
+	p.seen = {}
+end
+
+-- The effect for `key` showing mesh `uuid`, and what it was last told
+-- (an empty table when it is new to this key).
+local function poolTake(p, key, uuid)
+	local i = p.slot[key]
+	if i and (p.seen[i] or p.uuid[i] ~= uuid) then i = nil end
+	if not i then
+		local list = p.free[uuid]
+		while list and #list > 0 and not i do
+			local j = table.remove(list)
+			if not p.key[j] and not p.seen[j] then i = j end
+		end
+		i = i or #p.effects + 1
+		local old = p.key[i]
+		if old ~= nil and p.slot[old] == i then p.slot[old] = nil end
+		p.key[i] = key
+		if p.slot[key] == nil then p.slot[key] = i end
+		p.state[i] = {}
+	end
+	local e = p.effects[i]
+	if not (e and sm.exists(e)) or p.uuid[i] ~= uuid then
+		if e and sm.exists(e) then e:destroy() end
+		e = sm.effect.createEffect("ShapeRenderable")
+		e:setParameter("uuid", uuid)
+		p.effects[i], p.uuid[i], p.state[i] = e, uuid, {}
+	end
+	p.seen[i] = true
+	return e, p.state[i]
+end
+
+-- Shrink away and free every effect not used this frame.
+local function poolEnd(p)
+	for i, e in ipairs(p.effects) do
+		if not p.seen[i] then
+			local st = p.state[i]
+			if not st.hidden then
+				if sm.exists(e) and e:isPlaying() then e:setScale(HIDDEN_SCALE) end
+				st.hidden = true
+			end
+			local key = p.key[i]
+			if key ~= nil then
+				if p.slot[key] == i then p.slot[key] = nil end
+				p.key[i] = nil
+				local list = p.free[p.uuid[i]]
+				if not list then list = {} p.free[p.uuid[i]] = list end
+				list[#list + 1] = i
+			end
+		end
+	end
+end
+
+-- same point as last time (positions are new values every frame)
+local function samePos(u, v)
+	return u ~= nil and v ~= nil and u.x == v.x and u.y == v.y and u.z == v.z
+end
+
+-- Cut `list` down to the `max` nearest. Items shown last time (`shown[key]`)
+-- count KEEP_MARGIN nearer, so a small move doesn't swap wires at the edge, and
+-- equal distances are broken by key, so standing still picks the same ones.
+-- Returns the new shown set.
+local function keepNearest(list, max, distOf, keyOf, shown)
+	local d, k = {}, {}
+	for _, item in ipairs(list) do
+		k[item] = keyOf(item)
+		d[item] = distOf(item) - ((shown and shown[k[item]]) and KEEP_MARGIN or 0)
+	end
+	if #list > max then
+		table.sort(list, function(x, y)
+			if d[x] ~= d[y] then return d[x] < d[y] end
+			return k[x] < k[y]
+		end)
+		for i = #list, max + 1, -1 do list[i] = nil end
+	end
+	local set = {}
+	for _, item in ipairs(list) do set[k[item]] = true end
+	return set
 end
 
 local function agoText(ticks)
@@ -1503,11 +1605,11 @@ function LogicTool:client_onCreate()
 		active = "A",
 		markers = { A = {}, B = {}, C = {} }, -- [interId] = effect
 		flags = {},                            -- [interId] = { effect =, inter = }
-		lines = {},                            -- effect pool
-		lineUuid = {},                         -- mesh shown by each pooled effect
+		linePool = newPool(),                  -- line and arrowhead effects, per wire
 		labels = {},                           -- world gui pool
 		labelMode = 2,                         -- order numbers (A0, A1 ...) by default
 		showLines = true,
+		maxWiresText = tostring(MAX_WIRES),    -- setting: Wire lines, wires drawn at most
 		typeLabels = {},                       -- [interId] = "AND"
 		partInfo = {},                         -- [interId] = { kind, mode, delay } for scripts
 		delayLabels = {},                      -- [interId] = "3t" / "2-5t"
@@ -1549,7 +1651,7 @@ function LogicTool:client_onCreate()
 		wireList = nil,                        -- Click: Wire: the parts that get dots now
 		wireAim = nil,                         -- Click: Wire: the part the crosshair snaps to
 		wireCache = nil,                       -- Click: Wire: { asTarget, src, bodies, list, set, frames }
-		dots = {},                             -- Click: Wire: pooled dot effects
+		dotPool = newPool(),                   -- Click: Wire: dot effects, per part
 		log = {},                              -- wiring log summaries { id, label, tick, made, cut, undone }, oldest first
 		logView = nil,                         -- while browsing the log: { pos =, entry =, pending = }
 		bulkTimerText = "0s 5t",               -- setting: what Set timers sets
@@ -1557,6 +1659,8 @@ function LogicTool:client_onCreate()
 		debugFrames = {},                      -- frames on the parts that changed this tick
 		press = nil,
 	}
+	self.cl.lines = self.cl.linePool.effects -- the effects, for put away and tests
+	self.cl.dots = self.cl.dotPool.effects
 
 	if not self.tool:isLocal() then return end
 
@@ -1581,6 +1685,7 @@ function LogicTool:client_onCreate()
 	gui:setTextChangedCallback("debugSpeed", "cl_onDebugSpeedChanged")
 	gui:setTextChangedCallback("scriptName", "cl_onScriptNameChanged")
 	gui:setTextChangedCallback("bulkTimer", "cl_onBulkTimerChanged")
+	gui:setTextChangedCallback("maxWires", "cl_onMaxWiresChanged")
 	self:cl_createDropDowns(gui)
 	gui:setText("debugEvery", self.cl.debugEveryText)
 	gui:setText("debugInfo", DEBUG_HINT)
@@ -1597,6 +1702,7 @@ function LogicTool:client_onCreate()
 	gui:setText("debugEvery", self.cl.debugEveryText)
 	gui:setText("debugSpeed", self.cl.debugSpeedText)
 	gui:setText("bulkTimer", self.cl.bulkTimerText)
+	gui:setText("maxWires", self.cl.maxWiresText)
 	self:cl_showScript()
 	self:cl_showModuleInfo()
 	self:cl_refreshGui()
@@ -2479,7 +2585,7 @@ local SETTINGS_SPEC = {
 		lutStyle = LUT_STYLES, debugInputMode = DEBUG_INPUT_MODES, bulkMode = BULK_MODES, clickMode = CLICK_MODES,
 	},
 	bools = { "showLines", "lutCompress", "lutEven" },
-	texts = { debugSpeedText = 16, debugEveryText = 16, debugInputText = 64, bulkTimerText = 16, scriptNameText = LogicSettings.NAME_MAX, script = 100000 },
+	texts = { maxWiresText = 16, debugSpeedText = 16, debugEveryText = 16, debugInputText = 64, bulkTimerText = 16, scriptNameText = LogicSettings.NAME_MAX, script = 100000 },
 }
 
 local function readJson(path)
@@ -3546,6 +3652,20 @@ function LogicTool:cl_onBulkTimerChanged(_, text)
 	self:cl_markDirty(2)
 end
 
+-- Wire lines: how many wires may be drawn at once. A box that isn't a
+-- whole number (empty, while typing) keeps the default.
+function LogicTool:cl_maxWires()
+	local n = tonumber(((self.cl.maxWiresText or ""):gsub("%s", "")))
+	if not n or n ~= math.floor(n) or n < 1 then return MAX_WIRES end
+	return math.min(n, MAX_WIRES_TOP)
+end
+
+function LogicTool:cl_onMaxWiresChanged(_, text)
+	self.cl.maxWiresText = text
+	self.cl.allWires = nil -- pick the nearest again with the new count
+	self:cl_markDirty(2)
+end
+
 function LogicTool:cl_onDebugSpeedChanged(_, text)
 	self.cl.debugSpeedText = text
 	self:cl_markDirty(2)
@@ -3756,7 +3876,8 @@ function LogicTool:cl_hideWorldVisuals()
 	for _, l in ipairs(self.cl.lines) do
 		if sm.exists(l) then l:destroy() end
 	end
-	self.cl.lines, self.cl.lineUuid = {}, {}
+	self.cl.linePool = newPool()
+	self.cl.lines = self.cl.linePool.effects
 	for _, lab in ipairs(self.cl.labels) do
 		pcall(lab.destroy, lab)
 	end
@@ -3769,7 +3890,8 @@ function LogicTool:cl_hideWorldVisuals()
 	for _, e in ipairs(self.cl.dots) do
 		if sm.exists(e) then e:destroy() end
 	end
-	self.cl.dots = {}
+	self.cl.dotPool = newPool()
+	self.cl.dots = self.cl.dotPool.effects
 end
 
 function LogicTool:cl_clearAllVisuals()
@@ -3784,27 +3906,21 @@ function LogicTool:cl_clearAllVisuals()
 end
 
 local UP = sm.vec3.new(0, 1, 0)
-local HIDDEN_SCALE = sm.vec3.new(0.0001, 0.0001, 0.0001) -- an unused line piece
 
--- Pooled effect i, showing mesh `uuid` stretched from a to b.
-function LogicTool:cl_line(i, uuid, a, b, color, width)
-	local e = self.cl.lines[i]
-	if e and sm.exists(e) and self.cl.lineUuid[i] ~= uuid then
-		e:destroy()
-		e = nil
-	end
-	if not e or not sm.exists(e) then
-		e = sm.effect.createEffect("ShapeRenderable")
-		e:setParameter("uuid", uuid)
-		self.cl.lines[i] = e
-		self.cl.lineUuid[i] = uuid
-	end
+-- The line effect for `key`, showing mesh `uuid` stretched from a to b.
+-- Only what changed since the last frame is sent to the effect.
+function LogicTool:cl_line(key, uuid, a, b, color, width)
+	local e, st = poolTake(self.cl.linePool, key, uuid)
+	if samePos(st.a, a) and samePos(st.b, b) and st.color == color and st.width == width then return end
+	st.a, st.b, st.color, st.width = a, b, color, width
 	local d = b - a
 	local len = d:length()
 	if len < 0.001 then
 		e:setScale(HIDDEN_SCALE)
+		st.hidden = true
 		return
 	end
+	st.hidden = false
 	e:setParameter("color", color)
 	e:setPosition(a + d * 0.5)
 	e:setRotation(sm.vec3.getRotation(UP, d / len))
@@ -3813,8 +3929,9 @@ function LogicTool:cl_line(i, uuid, a, b, color, width)
 end
 
 -- A connection: a wire from the parent, then an arrowhead pointing into the
--- child (the input side), stopping at the child's surface.
-function LogicTool:cl_connection(i, from, to, color, gap)
+-- child (the input side), stopping at the child's surface. `i` counts the
+-- pieces drawn this frame; `key` names the wire, so it keeps its effects.
+function LogicTool:cl_connection(i, key, from, to, color, gap)
 	local d = to - from
 	local len = d:length()
 	if len < 0.01 then return i end
@@ -3823,13 +3940,15 @@ function LogicTool:cl_connection(i, from, to, color, gap)
 	local arrowLen = math.min(ARROW_LEN, len * 0.3)
 	local tip = to - dir * gap
 	local base = tip - dir * arrowLen
-	self:cl_line(i, WIRE_UUID, from, base, color, LINE_THICK)
-	self:cl_line(i + 1, ARROW_UUID, base, tip, color, ARROW_WIDTH)
+	self:cl_line(key, WIRE_UUID, from, base, color, LINE_THICK)
+	self:cl_line(key .. "^", ARROW_UUID, base, tip, color, ARROW_WIDTH)
 	return i + 2
 end
 
 function LogicTool:cl_updateLines()
 	local n = 1
+	local MAX_LINES = self:cl_maxWires() * 2 -- line pieces: a line and an arrowhead a wire
+	poolBegin(self.cl.linePool)
 	local view = self.cl.debug and self.cl.debug.view
 	if view then
 		-- stepping: only this tick's changes, an arrow to every part each one
@@ -3847,7 +3966,7 @@ function LogicTool:cl_updateLines()
 					local start = from
 					-- wired to itself, or stacked in the same spot: come in from above
 					if (to - from):length() < 0.05 then start = to + DEBUG_LOOP_RISE end
-					n = self:cl_connection(n, start, to, color)
+					n = self:cl_connection(n, "d" .. inter.id .. ">" .. child.id, start, to, color)
 				end
 			end
 		end
@@ -3863,7 +3982,7 @@ function LogicTool:cl_updateLines()
 			if sm.exists(w.p) and sm.exists(w.c) then
 				local from, to = w.p:getShape().worldPosition, w.c:getShape().worldPosition
 				if (to - from):length() < 0.05 then from = to + DEBUG_LOOP_RISE end
-				n = self:cl_connection(n, from, to, w.kind == "connect" and COLOR_RISE or COLOR_FALL)
+				n = self:cl_connection(n, "l" .. w.p.id .. ">" .. w.c.id, from, to, w.kind == "connect" and COLOR_RISE or COLOR_FALL)
 			end
 		end
 	end
@@ -3879,7 +3998,7 @@ function LogicTool:cl_updateLines()
 			local cam = sm.camera.getPosition()
 			to = cam + sm.camera.getDirection() * math.max(0.5, (from - cam):length())
 		end
-		n = self:cl_connection(n, from, to, aim and COLOR_DOT_HOVER or COLOR_DOT, DRAG_ARROW_GAP)
+		n = self:cl_connection(n, "drag", from, to, aim and COLOR_DOT_HOVER or COLOR_DOT, DRAG_ARROW_GAP)
 	end
 	local done = {} -- wires already drawn, so Lines doesn't draw them again
 	if src then
@@ -3892,7 +4011,7 @@ function LogicTool:cl_updateLines()
 			if cs and sm.exists(cs) then
 				local start = from
 				if (cs.worldPosition - from):length() < 0.05 then start = cs.worldPosition + DEBUG_LOOP_RISE end
-				n = self:cl_connection(n, start, cs.worldPosition, src:isActive() and COLOR_ON or COLOR_OFF)
+				n = self:cl_connection(n, "w" .. src.id .. ">" .. c.id, start, cs.worldPosition, src:isActive() and COLOR_ON or COLOR_OFF)
 			end
 		end
 	end
@@ -3904,7 +4023,7 @@ function LogicTool:cl_updateLines()
 			done[key] = true
 			local ps, cs = p:getShape(), c:getShape()
 			if ps and cs and sm.exists(ps) and sm.exists(cs) then
-				n = self:cl_connection(n, ps.worldPosition, cs.worldPosition, p:isActive() and COLOR_ON or COLOR_OFF)
+				n = self:cl_connection(n, "w" .. key, ps.worldPosition, cs.worldPosition, p:isActive() and COLOR_ON or COLOR_OFF)
 			end
 		end
 		local any = false
@@ -3930,17 +4049,12 @@ function LogicTool:cl_updateLines()
 		local a, b = path[i], path[i + 1]
 		if sm.exists(a) and sm.exists(b) then
 			local up = sm.vec3.new(0, 0, 0.02)
-			n = self:cl_connection(n, a:getShape().worldPosition + up, b:getShape().worldPosition + up, COLOR_PATH)
+			n = self:cl_connection(n, "p" .. i, a:getShape().worldPosition + up, b:getShape().worldPosition + up, COLOR_PATH)
 		end
 	end
 
-	-- unused pieces are shrunk away, not stopped: an effect stopped and
-	-- started again a frame later can stay hidden while it says it plays.
-	-- They really stop only when the tool is put away (cl_hideWorldVisuals).
-	for i = n, #self.cl.lines do
-		local e = self.cl.lines[i]
-		if e and sm.exists(e) and e:isPlaying() then e:setScale(HIDDEN_SCALE) end
-	end
+	-- unused pieces are shrunk away, not stopped (see newPool)
+	poolEnd(self.cl.linePool)
 end
 
 -- Lines with no groups: the wires of the creation last looked at, nearest
@@ -3963,18 +4077,18 @@ function LogicTool:cl_allWires()
 			end
 		end
 	end
-	local keep = math.floor(MAX_LINES / 2)
+	local shown
+	local keep = self:cl_maxWires()
 	if #pairs_ > keep then
 		local cam = sm.camera.getPosition()
-		local dist = {}
-		for _, w in ipairs(pairs_) do
+		shown = keepNearest(pairs_, keep, function(w)
 			local ps, cs = w[1]:getShape(), w[2]:getShape()
-			dist[w] = (ps and cs) and ((ps.worldPosition + cs.worldPosition) * 0.5 - cam):length() or math.huge
-		end
-		table.sort(pairs_, function(x, y) return dist[x] < dist[y] end)
-		for i = #pairs_, keep + 1, -1 do pairs_[i] = nil end
+			return (ps and cs) and ((ps.worldPosition + cs.worldPosition) * 0.5 - cam):length() or math.huge
+		end, function(w)
+			return string.format("%012d>%012d", w[1].id, w[2].id)
+		end, c and c.shown)
 	end
-	self.cl.allWires = { list = pairs_, bodyIds = bodyIds, frames = DOT_REFRESH }
+	self.cl.allWires = { list = pairs_, bodyIds = bodyIds, frames = DOT_REFRESH, shown = shown }
 	return pairs_
 end
 
@@ -4273,17 +4387,17 @@ function LogicTool:cl_wireCandidates(lookShape)
 			end
 		end
 	end
+	local shown
 	if #list > DOT_MAX then
 		local cam = sm.camera.getPosition()
-		local dist = {}
-		for _, inter in ipairs(list) do dist[inter] = (inter:getShape().worldPosition - cam):length() end
-		table.sort(list, function(x, y) return dist[x] < dist[y] end)
-		for i = #list, DOT_MAX + 1, -1 do list[i] = nil end
+		shown = keepNearest(list, DOT_MAX, function(inter)
+			return (inter:getShape().worldPosition - cam):length()
+		end, function(inter) return inter.id end, c and c.shown)
 	end
 	local set = {}
 	for _, inter in ipairs(list) do set[inter] = true end
 	self.cl.wireCache = { asTarget = asTarget, src = src, bodies = bodies, bodyIds = bodyIds,
-		list = list, set = set, frames = DOT_REFRESH, groupKey = groupKey }
+		list = list, set = set, frames = DOT_REFRESH, groupKey = groupKey, shown = shown }
 	return list
 end
 
@@ -4375,6 +4489,7 @@ end
 -- to its part, so it shrinks with distance like the parts do.
 function LogicTool:cl_drawDots()
 	local n = 0
+	poolBegin(self.cl.dotPool)
 	local src = self:cl_wireSource()
 	local list = self.cl.wireList
 	if list and not self.cl.debug and not self.cl.logView then
@@ -4385,12 +4500,7 @@ function LogicTool:cl_drawDots()
 			local shape = inter:getShape()
 			if not (shape and sm.exists(shape)) then return end
 			n = n + 1
-			local e = self.cl.dots[n]
-			if not (e and sm.exists(e)) then
-				e = sm.effect.createEffect("ShapeRenderable")
-				e:setParameter("uuid", DOT_UUID)
-				self.cl.dots[n] = e
-			end
+			local e, st = poolTake(self.cl.dotPool, inter.id, DOT_UUID)
 			local centre = shape.worldPosition
 			local toCam = cam - centre
 			local dist = toCam:length()
@@ -4399,6 +4509,8 @@ function LogicTool:cl_drawDots()
 			local pos = dist > push + 0.05 and (centre + toCam * (push / dist)) or centre
 			-- a fixed size in the world, like the parts: smaller on screen further away
 			local size = math.min(bb.x, bb.y, bb.z) * DOT_SIZE * (grow or 1)
+			if samePos(st.pos, pos) and st.size == size and st.color == color then return end
+			st.pos, st.size, st.color, st.hidden = pos, size, color, false
 			e:setParameter("color", color)
 			e:setPosition(pos)
 			e:setScale(sm.vec3.new(size, size, size))
@@ -4412,10 +4524,7 @@ function LogicTool:cl_drawDots()
 			if inter ~= aim and inter ~= src then dot(inter, COLOR_DOT) end
 		end
 	end
-	for i = n + 1, #self.cl.dots do
-		local e = self.cl.dots[i]
-		if e and sm.exists(e) and e:isPlaying() then e:setScale(HIDDEN_SCALE) end
-	end
+	poolEnd(self.cl.dotPool)
 end
 
 ---------------------------------------------------------------------------

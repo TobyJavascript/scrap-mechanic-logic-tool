@@ -336,10 +336,20 @@
             <Property key="TextAlign" value="Left VCenter"/>
             <Property key="FontName" value="SM_TextLabel"/>
         </Widget>
-        <Widget type="Widget" skin="PanelEmpty" position_real="0.4500 0.3090 0.5200 0.0400" name="lines">
+        <Widget type="Widget" skin="PanelEmpty" position_real="0.4500 0.3090 0.3000 0.0400" name="lines">
+        </Widget>
+        <Widget type="Widget" skin="SearchBarBackground" position_real="0.7700 0.3090 0.2000 0.0400">
+            <Widget type="EditBox" skin="EditBoxStretch" position_real="0.0600 0.0500 0.8800 0.9000" name="maxWires">
+                <Property key="MultiLine" value="false"/>
+                <Property key="TextAlign" value="Center"/>
+                <Property key="FontName" value="SM_TextLabel"/>
+                <Property key="TextColour" value="1 1 1"/>
+                <Property key="MaxTextLength" value="5"/>
+                <Property key="Caption" value=""/>
+            </Widget>
         </Widget>
         <Widget type="EditBox" skin="EditBoxStretch" position_real="0.0300 0.3530 0.9400 0.0500">
-            <Property key="Caption" value="Draw the wires of selected parts in the world, red when on."/>
+            <Property key="Caption" value="Draw wires in the world, red when on. The box: most drawn at once, nearest first."/>
             <Property key="TextAlign" value="Left Top"/>
             <Property key="FontName" value="SM_TextSmall"/>
             <Property key="TextColour" value="0.7 0.7 0.7"/>
