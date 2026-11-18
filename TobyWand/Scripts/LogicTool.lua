@@ -116,6 +116,14 @@ local DOT_HOVER_GROW = 1.5
 local DOT_SNAP = 0.04     -- aim snaps to a dot this close to the crosshair (radians, about 2 degrees)
 local DOT_REFRESH = 15    -- frames between re-reading which parts get dots
 local KEEP_MARGIN = 2     -- over the limit, a new wire or dot must be this much nearer (m) to replace a shown one
+local SCAN_BUDGET = 150   -- logic parts read a frame when a whole creation is read (Lines, wire dots)
+local SCAN_PAUSE = 3      -- seconds between reading the same creation again (wires made by other tools)
+local CELL = 4            -- the read puts parts in cubes this big (m), to find the nearest without sorting them all
+local REPICK_MOVE = 0.5   -- the view must move this far (m) before the nearest wires are picked again
+local DOT_CAM_MOVE = 0.25 -- the view must move this far (m) before the dots are placed again
+local TOUCH_AGAIN = 10    -- frames: wires this tool changed are read again this much later (the game may be slow to show them)
+local STILL_REDRAW = 30   -- frames: lines and dots are worked out again at least this often while nothing moves
+local STILL_EPS = 0.0001  -- a body that moved less than this (m, or quaternion part) counts as still
 local WIRE_DRAG_TURN = 0.02 -- the view must turn this much (about 1 degree) for a press to count as a drag
 local LOG_MAX = 200          -- wiring log entries kept per player (this session)
 local LOG_DRAW_MAX = 300     -- wires of one entry sent to the client to draw
@@ -1650,7 +1658,9 @@ function LogicTool:client_onCreate()
 		wireDrag = nil,                        -- Click: Wire: { dir = } while the button is held after picking
 		wireList = nil,                        -- Click: Wire: the parts that get dots now
 		wireAim = nil,                         -- Click: Wire: the part the crosshair snaps to
-		wireCache = nil,                       -- Click: Wire: { asTarget, src, bodies, list, set, frames }
+		wireCache = nil,                       -- Click: Wire: { asTarget, src, version, list, set, frames }
+		scan = { version = 0, pause = 0 },     -- the creation read a little each frame (cl_scanStep)
+		scanLeft = SCAN_BUDGET,                -- parts that may still be read this frame
 		dotPool = newPool(),                   -- Click: Wire: dot effects, per part
 		log = {},                              -- wiring log summaries { id, label, tick, made, cut, undone }, oldest first
 		logView = nil,                         -- while browsing the log: { pos =, entry =, pending = }
@@ -2378,6 +2388,9 @@ function LogicTool:cl_sendOps(ops, label, mode)
 		for k = i, math.min(n, i + OPS_PER_PACKET - 1) do
 			local op = ops[k]
 			chunk[#chunk + 1] = { kind = op.kind, p = op.p, c = op.c }
+			-- the read (Lines, dots) takes these parts' wires again when done
+			self.cl.touched = self.cl.touched or {}
+			self.cl.touched[op.p] = true
 		end
 		i = i + OPS_PER_PACKET
 		self.network:sendToServer("sv_applyOps", { ops = chunk, first = first, last = i > n, label = label, mode = mode })
@@ -2427,6 +2440,14 @@ function LogicTool:cl_connectMode(mode)
 end
 
 function LogicTool:cl_onOpsDone(r)
+	local touched = self.cl.touched
+	self.cl.touched = nil
+	if r.undoneId or not touched then
+		self:cl_scanDirty() -- an undo: which parts changed is known only to the server
+	else
+		self:cl_readTouched(touched)
+		self.cl.touchAgain = { set = touched, frames = TOUCH_AGAIN }
+	end
 	if r.undoneId then
 		for _, e in ipairs(self.cl.log) do if e.id == r.undoneId then e.undone = true end end
 	end
@@ -3173,6 +3194,7 @@ function LogicTool:cl_bulkEdit(kind)
 end
 
 function LogicTool:cl_onBulkEdit(r)
+	self:cl_scanDirty()
 	local label = self.cl.bulkBusy or ""
 	self.cl.bulkBusy = false
 	if r.error then
@@ -3207,6 +3229,7 @@ function LogicTool:cl_onBulkEdit(r)
 end
 
 function LogicTool:cl_onLutBuilt(r)
+	self:cl_scanDirty()
 	self:cl_clearLutPreview()
 	if r.error then
 		self.cl.verifyRows = nil
@@ -3945,9 +3968,111 @@ function LogicTool:cl_connection(i, key, from, to, color, gap)
 	return i + 2
 end
 
+-- The bodies whose parts get lines or dots: the creation read, the groups'
+-- parts and the wire source. While none of them moves, the lines and dots
+-- stay where they are and need not be worked out again.
+function LogicTool:cl_watchBodies()
+	local out, seen = {}, {}
+	local function add(body)
+		if body and sm.exists(body) and not seen[body.id] then
+			seen[body.id] = true
+			local p, q = body.worldPosition, body.worldRotation
+			out[#out + 1] = { body = body, x = p.x, y = p.y, z = p.z, qx = q.x, qy = q.y, qz = q.z, qw = q.w }
+		end
+	end
+	local read = self.cl.scan.ready
+	for _, b in ipairs(read and read.bodies or {}) do add(b) end
+	for _, g in ipairs(GROUPS) do
+		for _, e in ipairs(self.cl.groups[g]) do
+			if sm.exists(e.shape) then add(e.shape.body) end
+		end
+	end
+	local src = self:cl_wireSource()
+	if src then add(src:getShape().body) end
+	return out
+end
+
+local function bodiesMoved(watch)
+	for _, w in ipairs(watch) do
+		local b = w.body
+		if not sm.exists(b) then return true end
+		local p, q = b.worldPosition, b.worldRotation
+		if math.abs(p.x - w.x) > STILL_EPS or math.abs(p.y - w.y) > STILL_EPS or math.abs(p.z - w.z) > STILL_EPS
+			or math.abs(q.x - w.qx) > STILL_EPS or math.abs(q.y - w.qy) > STILL_EPS
+			or math.abs(q.z - w.qz) > STILL_EPS or math.abs(q.w - w.qw) > STILL_EPS then
+			return true
+		end
+	end
+	return false
+end
+
+-- What the lines depend on, apart from where the parts are.
+function LogicTool:cl_linesKey()
+	local parts = { self.cl.showLines and 1 or 0, self:cl_maxWires(), self.cl.linesChanged or 0 }
+	for _, g in ipairs(GROUPS) do
+		local list = self.cl.groups[g]
+		parts[#parts + 1] = #list .. ":" .. (list[1] and list[1].id or "") .. ":" .. (list[#list] and list[#list].id or "")
+	end
+	local src = self:cl_wireSource()
+	parts[#parts + 1] = src and src.id or ""
+	local path = self.cl.path or {}
+	parts[#parts + 1] = #path .. ":" .. tostring(path[1] or "")
+	parts[#parts + 1] = tostring(self.cl.logView and self.cl.logView.entry or "")
+	return table.concat(parts, "|")
+end
+
+-- Lines each frame. When nothing they depend on changed and no body moved,
+-- only the on/off colours are checked; everything else stays as drawn.
 function LogicTool:cl_updateLines()
+	local view = self.cl.debug and self.cl.debug.view
+	local list
+	if self.cl.showLines and not view and not (self.cl.logView and self.cl.logView.entry) then
+		local any = #self.cl.groups.A + #self.cl.groups.B + #self.cl.groups.C > 0
+		if not any then list = self:cl_allWires() end
+	end
+	local key = self:cl_linesKey()
+	local still = self.cl.linesStill
+	self.cl.linesStill = nil
+	if not view and not self.cl.wireDrag and still and still.key == key and still.list == list
+		and still.frames > 0 and not bodiesMoved(still.watch) then
+		still.frames = still.frames - 1
+		self.cl.linesStill = still
+		-- the colours: one question per part that feeds wires
+		local state = {}
+		local pool = self.cl.linePool
+		for _, w in ipairs(self.cl.lineLive or {}) do
+			local on = state[w.p]
+			if on == nil then
+				on = sm.exists(w.p) and w.p:isActive() or false
+				state[w.p] = on
+			end
+			if on ~= w.on then
+				w.on = on
+				local color = on and COLOR_ON or COLOR_OFF
+				for _, k in ipairs({ w.key, w.key .. "^" }) do
+					local i = pool.slot[k]
+					local e = i and pool.effects[i]
+					if e and sm.exists(e) then
+						e:setParameter("color", color)
+						pool.state[i].color = color
+					end
+				end
+			end
+		end
+		return
+	end
+	self:cl_drawLines()
+	self.cl.linesStill = { key = key, list = list, frames = STILL_REDRAW, watch = self:cl_watchBodies() }
+end
+
+-- Every line worked out from the game: where each end is, on or off. Wires
+-- whose colour follows the part's state go in `self.cl.lineLive` for the
+-- frames when nothing moved (cl_updateLines).
+function LogicTool:cl_drawLines()
 	local n = 1
 	local MAX_LINES = self:cl_maxWires() * 2 -- line pieces: a line and an arrowhead a wire
+	local live = {}
+	self.cl.lineLive = live
 	poolBegin(self.cl.linePool)
 	local view = self.cl.debug and self.cl.debug.view
 	if view then
@@ -4011,7 +4136,10 @@ function LogicTool:cl_updateLines()
 			if cs and sm.exists(cs) then
 				local start = from
 				if (cs.worldPosition - from):length() < 0.05 then start = cs.worldPosition + DEBUG_LOOP_RISE end
-				n = self:cl_connection(n, "w" .. src.id .. ">" .. c.id, start, cs.worldPosition, src:isActive() and COLOR_ON or COLOR_OFF)
+				local on = src:isActive()
+				local key = "w" .. src.id .. ">" .. c.id
+				n = self:cl_connection(n, key, start, cs.worldPosition, on and COLOR_ON or COLOR_OFF)
+				live[#live + 1] = { p = src, key = key, on = on }
 			end
 		end
 	end
@@ -4023,7 +4151,9 @@ function LogicTool:cl_updateLines()
 			done[key] = true
 			local ps, cs = p:getShape(), c:getShape()
 			if ps and cs and sm.exists(ps) and sm.exists(cs) then
-				n = self:cl_connection(n, "w" .. key, ps.worldPosition, cs.worldPosition, p:isActive() and COLOR_ON or COLOR_OFF)
+				local on = p:isActive()
+				n = self:cl_connection(n, "w" .. key, ps.worldPosition, cs.worldPosition, on and COLOR_ON or COLOR_OFF)
+				live[#live + 1] = { p = p, key = "w" .. key, on = on }
 			end
 		end
 		local any = false
@@ -4057,39 +4187,207 @@ function LogicTool:cl_updateLines()
 	poolEnd(self.cl.linePool)
 end
 
--- Lines with no groups: the wires of the creation last looked at, nearest
--- first, as many as the line pool can draw. Found again every few frames.
-function LogicTool:cl_allWires()
-	local c = self.cl.allWires
-	local look = self.cl.lookShape
-	local body = look and sm.exists(look) and look.body or nil
-	if c and c.frames > 0 and (not body or c.bodyIds[body.id]) then
-		c.frames = c.frames - 1
-		return c.list
+-- Reading a whole creation (Lines and wire dots with no groups). A big
+-- creation has thousands of parts, and asking the game about each one is
+-- slow, so it is read SCAN_BUDGET parts a frame into plain tables: each logic
+-- part, its wire children and its position as numbers. The last full read
+-- stays in use while the next one is made, every SCAN_PAUSE seconds, at once
+-- after this tool changes wires, or when you look at another creation.
+local function newRead(bodies)
+	local read = { bodies = bodies, bodyIds = {}, queue = {}, pos = 1, parts = {}, byId = {},
+		cells = {}, cellByKey = {}, edits = 0 }
+	for _, b in ipairs(bodies) do
+		read.bodyIds[b.id] = true
+		if sm.exists(b) then
+			for _, inter in ipairs(b:getInteractables()) do read.queue[#read.queue + 1] = inter end
+		end
 	end
-	if not body then return c and c.list or {} end
-	local bodyIds, pairs_ = {}, {}
+	return read
+end
+
+local function creationBodies(list, seen, body)
+	if not (body and sm.exists(body)) or seen[body.id] then return end
 	for _, b in ipairs(body:getCreationBodies()) do
-		bodyIds[b.id] = true
-		for _, inter in ipairs(b:getInteractables()) do
-			if isLogicCapable(inter) then
-				for _, ch in ipairs(inter:getChildren(LOGIC)) do pairs_[#pairs_ + 1] = { inter, ch } end
+		if not seen[b.id] then
+			seen[b.id] = true
+			list[#list + 1] = b
+		end
+	end
+end
+
+function LogicTool:cl_scanStep()
+	local s = self.cl.scan
+	local look = self.cl.lookShape
+	local lookBody = look and sm.exists(look) and look.body or nil
+	local src = self:cl_wireSource()
+	local srcBody = src and src:getShape().body or nil
+	local target = s.work or s.ready
+	local covered = target and (not lookBody or target.bodyIds[lookBody.id])
+		and (not srcBody or target.bodyIds[srcBody.id])
+	if not s.work and (not covered or s.dirty or s.pause <= 0) then
+		local bodies, seen = {}, {}
+		creationBodies(bodies, seen, lookBody)
+		creationBodies(bodies, seen, srcBody)
+		if #bodies == 0 and s.ready then
+			for _, b in ipairs(s.ready.bodies) do creationBodies(bodies, seen, b) end
+		end
+		s.dirty, s.pause = false, SCAN_PAUSE
+		if #bodies > 0 then s.work = newRead(bodies) end
+	elseif s.work and not covered then
+		-- looked at another creation while reading: start over on that one
+		s.work = nil
+		return self:cl_scanStep()
+	end
+	local w = s.work
+	if not w then return end
+	while w.pos <= #w.queue and self.cl.scanLeft > 0 do
+		local inter = w.queue[w.pos]
+		w.pos = w.pos + 1
+		self.cl.scanLeft = self.cl.scanLeft - 1
+		if sm.exists(inter) then
+			local okIn, inType = pcall(inter.getConnectionInputType, inter)
+			local okOut, outType = pcall(inter.getConnectionOutputType, inter)
+			local logicIn = okIn and bit.band(inType, LOGIC) ~= 0
+			local logicOut = okOut and bit.band(outType, LOGIC) ~= 0
+			local shape = (logicIn or logicOut) and inter:getShape()
+			if shape and sm.exists(shape) then
+				local p = shape.worldPosition
+				local part = { inter = inter, id = inter.id, x = p.x, y = p.y, z = p.z,
+					logicIn = logicIn, logicOut = logicOut, children = inter:getChildren(LOGIC) }
+				w.parts[#w.parts + 1] = part
+				w.byId[part.id] = part
+				local ix, iy, iz = math.floor(p.x / CELL), math.floor(p.y / CELL), math.floor(p.z / CELL)
+				local key = (ix + 50000) * 1e10 + (iy + 50000) * 1e5 + (iz + 50000)
+				local cell = w.cellByKey[key]
+				if not cell then
+					cell = { key = key, x = (ix + 0.5) * CELL, y = (iy + 0.5) * CELL, z = (iz + 0.5) * CELL, parts = {} }
+					w.cellByKey[key] = cell
+					w.cells[#w.cells + 1] = cell
+				end
+				cell.parts[#cell.parts + 1] = part
 			end
 		end
 	end
-	local shown
-	local keep = self:cl_maxWires()
-	if #pairs_ > keep then
-		local cam = sm.camera.getPosition()
-		shown = keepNearest(pairs_, keep, function(w)
-			local ps, cs = w[1]:getShape(), w[2]:getShape()
-			return (ps and cs) and ((ps.worldPosition + cs.worldPosition) * 0.5 - cam):length() or math.huge
-		end, function(w)
-			return string.format("%012d>%012d", w[1].id, w[2].id)
-		end, c and c.shown)
+	if w.pos > #w.queue then
+		w.queue = nil
+		s.ready, s.work = w, nil
+		s.version = s.version + 1
 	end
-	self.cl.allWires = { list = pairs_, bodyIds = bodyIds, frames = DOT_REFRESH, shown = shown }
-	return pairs_
+end
+
+-- Read the creation again soon: this tool just changed wires or parts.
+function LogicTool:cl_scanDirty()
+	self.cl.scan.dirty = true
+	self.cl.linesChanged = (self.cl.linesChanged or 0) + 1
+end
+
+-- The wires of these parts changed (this tool wired them): read just them
+-- again, now and a few frames later, instead of the whole creation.
+function LogicTool:cl_readTouched(set)
+	self.cl.linesChanged = (self.cl.linesChanged or 0) + 1
+	local read = self.cl.scan.ready
+	if not read then return end
+	for inter in pairs(set) do
+		if sm.exists(inter) then
+			local part = read.byId[inter.id]
+			if part then
+				part.children = inter:getChildren(LOGIC)
+			elseif read.bodyIds[inter:getShape().body.id] then
+				self.cl.scan.dirty = true -- a part the read hasn't got
+			end
+		end
+	end
+	read.edits = read.edits + 1
+end
+
+local function camDist(part, cx, cy, cz)
+	local dx, dy, dz = part.x - cx, part.y - cy, part.z - cz
+	return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+-- The read's parts in the cells nearest the camera, as many as fit in `want`:
+-- `count(part)` says how much a part adds (0: leave it out). Only the cells are
+-- sorted, not the parts. Whole cells are taken (only the nearest is cut, when
+-- it alone is too big), so which parts come from a cell never depends on the
+-- order: cells shown last time (`shown`) count KEEP_MARGIN nearer, and a small
+-- move keeps the same ones. Also gives the cells used, and a text naming them:
+-- the same text means the same parts.
+local function nearestParts(read, cam, want, count, shown)
+	local cx, cy, cz = cam.x, cam.y, cam.z
+	local d, order = {}, {}
+	for i, cell in ipairs(read.cells) do
+		local dx, dy, dz = cell.x - cx, cell.y - cy, cell.z - cz
+		d[cell] = math.sqrt(dx * dx + dy * dy + dz * dz) - ((shown and shown[cell.key]) and KEEP_MARGIN or 0)
+		order[i] = cell
+	end
+	table.sort(order, function(a, b)
+		if d[a] ~= d[b] then return d[a] < d[b] end
+		return a.key < b.key
+	end)
+	local out, total, used, names = {}, 0, {}, {}
+	for _, cell in ipairs(order) do
+		local mine, sum = {}, 0
+		for _, part in ipairs(cell.parts) do
+			local k = count(part)
+			if k > 0 then
+				mine[#mine + 1] = part
+				sum = sum + k
+			end
+		end
+		if sum > 0 then
+			if total + sum > want then
+				if total == 0 then
+					-- the nearest cell alone is too big: as much of it as fits
+					for _, part in ipairs(mine) do
+						if total >= want then break end
+						out[#out + 1] = part
+						total = total + count(part)
+					end
+					used[cell.key] = true
+					names[#names + 1] = cell.key
+				end
+				break
+			end
+			for _, part in ipairs(mine) do out[#out + 1] = part end
+			total = total + sum
+			used[cell.key] = true
+			names[#names + 1] = cell.key
+		end
+	end
+	return out, used, table.concat(names, ",")
+end
+
+-- Lines with no groups: the wires of the creation last looked at, nearest
+-- first, as many as the setting allows. Picked from the read (no questions to
+-- the game) when it changes or the view moves; the same list is kept while
+-- the same parts are nearest, so the lines need not be redrawn.
+function LogicTool:cl_allWires()
+	self:cl_scanStep()
+	local s = self.cl.scan
+	local read = s.ready
+	if not read then return {} end
+	local c = self.cl.allWires
+	local keep = self:cl_maxWires()
+	local cam = sm.camera.getPosition()
+	local ver = s.version .. ":" .. read.edits
+	if c and c.ver == ver and c.keep == keep and (cam - c.cam):length() < REPICK_MOVE then
+		return c.list
+	end
+	local parts, used, names = nearestParts(read, cam, keep, function(part) return #part.children end, c and c.shown)
+	local sig = ver .. "|" .. keep .. "|" .. names
+	if c and c.sig == sig then
+		c.cam, c.shown = cam, used
+		return c.list
+	end
+	local list = {}
+	for _, part in ipairs(parts) do
+		for _, ch in ipairs(part.children) do
+			if #list >= keep then break end
+			list[#list + 1] = { part.inter, ch }
+		end
+	end
+	self.cl.allWires = { list = list, ver = ver, keep = keep, cam = cam, shown = used, sig = sig }
+	return list
 end
 
 function LogicTool:cl_label(i, pos, text)
@@ -4269,6 +4567,17 @@ function LogicTool:client_onUpdate(dt)
 	end
 
 	self:cl_prune()
+	-- whole-creation reads may use SCAN_BUDGET parts until the next frame
+	self.cl.scanLeft = SCAN_BUDGET
+	local again = self.cl.touchAgain
+	if again then
+		again.frames = again.frames - 1
+		if again.frames <= 0 then
+			self.cl.touchAgain = nil
+			self:cl_readTouched(again.set)
+		end
+	end
+	self.cl.scan.pause = self.cl.scan.pause - (dt or 0)
 
 	local h = self.cl.hoverInter
 	if h and sm.exists(h) then
@@ -4346,57 +4655,54 @@ function LogicTool:cl_wireCandidates(lookShape)
 	local A, B = self.cl.groups.A, self.cl.groups.B
 	local groupKey = #A .. ":" .. #B .. ":" .. (A[1] and A[1].inter.id or "") .. ":" .. (B[1] and B[1].inter.id or "")
 		.. ":" .. (A[#A] and A[#A].inter.id or "") .. ":" .. (B[#B] and B[#B].inter.id or "")
+	local g = asTarget and "B" or "A"
+	local useGroup = #self.cl.groups[g] > 0
+	if not useGroup then self:cl_scanStep() end
+	local read = not useGroup and self.cl.scan.ready or nil
+	local version = read and (self.cl.scan.version .. ":" .. read.edits) or nil
 	local stale = not c or c.asTarget ~= asTarget or c.src ~= src or c.frames <= 0 or c.groupKey ~= groupKey
-		or (lookBody and not c.bodyIds[lookBody.id])
+		or c.version ~= version
 	if not stale then
 		c.frames = c.frames - 1
 		return c.list
 	end
 
-	local bodies, bodyIds = {}, {}
-	local function addCreation(body)
-		if not (body and sm.exists(body)) or bodyIds[body.id] then return end
-		for _, b in ipairs(body:getCreationBodies()) do
-			if not bodyIds[b.id] then
-				bodyIds[b.id] = true
-				bodies[#bodies + 1] = b
-			end
-		end
-	end
-	if lookBody then
-		addCreation(lookBody)
-	elseif c then
-		for _, b in ipairs(c.bodies) do addCreation(b) end
-	end
-	if src then addCreation(src:getShape().body) end
-
-	local list = {}
-	local g = asTarget and "B" or "A"
-	if #self.cl.groups[g] > 0 then
+	local list, pos = {}, {}
+	local shown
+	if useGroup then
 		for _, e in ipairs(self.cl.groups[g]) do
 			if sm.exists(e.inter) and e.inter ~= src then list[#list + 1] = e.inter end
 		end
-	else
-		for _, b in ipairs(bodies) do
-			if sm.exists(b) then
-				for _, inter in ipairs(b:getInteractables()) do
-					if inter ~= src and isLogicCapable(inter) and self:cl_wireAllowed(inter, asTarget) then
-						list[#list + 1] = inter
-					end
-				end
-			end
+	elseif read then
+		-- from the creation read (cl_scanStep), nearest cells first: no questions to the game
+		local parts, used, names = nearestParts(read, sm.camera.getPosition(), DOT_MAX, function(part)
+			return (part.inter ~= src and (asTarget and part.logicIn or not asTarget and part.logicOut)) and 1 or 0
+		end, c and c.shown)
+		local sig = version .. "|" .. tostring(asTarget) .. "|" .. (src and src.id or "") .. "|" .. groupKey .. "|" .. names
+		if c and c.sig == sig then
+			-- the same dots: keep the list, so they need not be placed again
+			c.frames, c.shown = DOT_REFRESH, used
+			return c.list
 		end
+		for _, part in ipairs(parts) do list[#list + 1] = part.inter end
+		local set = {}
+		for _, inter in ipairs(list) do set[inter] = true end
+		self.cl.wireCache = { asTarget = asTarget, src = src, version = version,
+			list = list, set = set, frames = DOT_REFRESH, groupKey = groupKey, shown = used, sig = sig }
+		return list
 	end
-	local shown
 	if #list > DOT_MAX then
 		local cam = sm.camera.getPosition()
+		local cx, cy, cz = cam.x, cam.y, cam.z
 		shown = keepNearest(list, DOT_MAX, function(inter)
+			local part = pos[inter]
+			if part then return camDist(part, cx, cy, cz) end
 			return (inter:getShape().worldPosition - cam):length()
 		end, function(inter) return inter.id end, c and c.shown)
 	end
 	local set = {}
 	for _, inter in ipairs(list) do set[inter] = true end
-	self.cl.wireCache = { asTarget = asTarget, src = src, bodies = bodies, bodyIds = bodyIds,
+	self.cl.wireCache = { asTarget = asTarget, src = src, version = version,
 		list = list, set = set, frames = DOT_REFRESH, groupKey = groupKey, shown = shown }
 	return list
 end
@@ -4407,19 +4713,29 @@ function LogicTool:cl_wireAimAt(list, lookInter)
 	local c = self.cl.wireCache
 	if lookInter and c and c.set[lookInter] and sm.exists(lookInter) then return lookInter end
 	local cam, dir = sm.camera.getPosition(), sm.camera.getDirection()
+	local cx, cy, cz, dx, dy, dz = cam.x, cam.y, cam.z, dir.x, dir.y, dir.z
+	-- where each dot's part is, as drawn last (cl_drawDots); asked only for new ones
+	local centres = self.cl.dotCentres or {}
 	local best, bestOff, bestT
 	for _, inter in ipairs(list) do
-		if sm.exists(inter) then
-			local v = inter:getShape().worldPosition - cam
-			local t = v:dot(dir)
+		local c = centres[inter]
+		if not c and sm.exists(inter) then
+			local p = inter:getShape().worldPosition
+			c = { x = p.x, y = p.y, z = p.z }
+		end
+		if c then
+			local vx, vy, vz = c.x - cx, c.y - cy, c.z - cz
+			local t = vx * dx + vy * dy + vz * dz
 			if t > 0.1 and t < RANGE then
-				local off = (v - dir * t):length() / t
+				local ox, oy, oz = vx - dx * t, vy - dy * t, vz - dz * t
+				local off = math.sqrt(ox * ox + oy * oy + oz * oz) / t
 				if off < DOT_SNAP and (not best or off < bestOff - 0.005 or (off < bestOff + 0.005 and t < bestT)) then
 					best, bestOff, bestT = inter, off, t
 				end
 			end
 		end
 	end
+	if best and not sm.exists(best) then return nil end
 	return best
 end
 
@@ -4488,10 +4804,23 @@ end
 -- source green. Each sits on the side of its part that faces you and is sized
 -- to its part, so it shrinks with distance like the parts do.
 function LogicTool:cl_drawDots()
-	local n = 0
-	poolBegin(self.cl.dotPool)
 	local src = self:cl_wireSource()
 	local list = self.cl.wireList
+	-- nothing moved (the view, the parts) and the same dots: they stay as they are
+	local cam = sm.camera.getPosition()
+	local still = self.cl.dotsStill
+	self.cl.dotsStill = nil
+	if list and still and still.list == list and still.aim == self.cl.wireAim and still.src == src
+		and still.frames > 0 and math.abs(cam.x - still.cx) < DOT_CAM_MOVE and math.abs(cam.y - still.cy) < DOT_CAM_MOVE
+		and math.abs(cam.z - still.cz) < DOT_CAM_MOVE and not bodiesMoved(still.watch) then
+		still.frames = still.frames - 1
+		self.cl.dotsStill = still
+		return
+	end
+	local centres = {}
+	self.cl.dotCentres = centres -- for aiming (cl_wireAimAt) without asking the game
+	local n = 0
+	poolBegin(self.cl.dotPool)
 	if list and not self.cl.debug and not self.cl.logView then
 		local cam = sm.camera.getPosition()
 		local aim = self.cl.wireAim
@@ -4502,6 +4831,7 @@ function LogicTool:cl_drawDots()
 			n = n + 1
 			local e, st = poolTake(self.cl.dotPool, inter.id, DOT_UUID)
 			local centre = shape.worldPosition
+			centres[inter] = { x = centre.x, y = centre.y, z = centre.z }
 			local toCam = cam - centre
 			local dist = toCam:length()
 			local bb = shape:getBoundingBox()
@@ -4525,6 +4855,10 @@ function LogicTool:cl_drawDots()
 		end
 	end
 	poolEnd(self.cl.dotPool)
+	if list and not self.cl.debug and not self.cl.logView then
+		self.cl.dotsStill = { list = list, aim = self.cl.wireAim, src = src, frames = STILL_REDRAW,
+			cx = cam.x, cy = cam.y, cz = cam.z, watch = self:cl_watchBodies() }
+	end
 end
 
 ---------------------------------------------------------------------------

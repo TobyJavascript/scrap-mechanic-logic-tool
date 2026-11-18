@@ -36,7 +36,7 @@ V.__tostring = function(a) return string.format("(%g,%g,%g)", a.x, a.y, a.z) end
 
 local Q = {}
 Q.__index = Q
-local function quat() return setmetatable({ q = true }, Q) end
+local function quat() return setmetatable({ q = true, x = 0, y = 0, z = 0, w = 1 }, Q) end
 Q.__mul = function(a, b)
 	if getmetatable(b) == V then return vec(b.x, b.y, b.z) end
 	return quat()
@@ -54,9 +54,10 @@ function Inter:getConnectionInputType() return self.inType end
 function Inter:getConnectionOutputType() return self.outType end
 function Inter:getChildren() local o = {} for _, c in ipairs(self.children) do o[#o + 1] = c end return o end
 function Inter:getParents() local o = {} for _, c in ipairs(self.parents) do o[#o + 1] = c end return o end
-function Inter:getShape() return self.shape end
+SHAPE_ASKS = 0 -- to check a still frame asks the game for no part positions
+function Inter:getShape() SHAPE_ASKS = SHAPE_ASKS + 1 return self.shape end
 function Inter:getBody() return self.shape.body end
-function Inter:isActive() return false end
+function Inter:isActive() return self.on == true end
 local function removeFrom(list, x)
 	for i, v in ipairs(list) do if v == x then table.remove(list, i) return true end end
 end
@@ -96,7 +97,9 @@ function Body:getCreationShapes()
 	return o
 end
 function Body:getShapes() return self.shapes end
+READS = 0 -- whole-body reads, to check a still frame asks the game nothing
 function Body:getInteractables()
+	READS = READS + 1
 	local o = {}
 	for _, s in ipairs(self.shapes) do if s.interactable then o[#o + 1] = s.interactable end end
 	return o
@@ -1205,7 +1208,14 @@ check("wire: source arrows", (function()
 	for _, e in ipairs(tool.cl.lines) do if SHOWN(e) then n = n + 1 end end
 	return n == 4
 end)())
-step("wire: click g1 again cuts", function() clickAt(DBG.g1) end)
+local versionBeforeCut
+step("wire: click g1 again cuts", function() versionBeforeCut = tool.cl.scan.version clickAt(DBG.g1) end)
+check("read: the wires the tool changed are read again at once (not the whole creation)", tool.cl.scan.version == versionBeforeCut
+	and (function()
+		for _, part in ipairs(tool.cl.scan.ready.parts) do
+			if part.inter == DBG.sw then return #part.children == 1 and part.children[1] == DBG.g2 end
+		end
+	end)())
 check("wire: cut like the connect tool", #DBG.sw.children == 1 and DBG.sw.children[1] == DBG.g2 and tool.cl.log[#tool.cl.log].cut == 1)
 step("wire: right click drops the source", function() clickAt(nil, true) end)
 check("wire: source dropped, group unchanged", tool.cl.wireSource == nil and tool.cl.active == "A")
@@ -1217,9 +1227,56 @@ check("lines: no groups shows the creation's wires", (function()
 end)())
 check("lines: a wire keeps its own line from the source view to Lines", wireLine ~= nil and SHOWN(wireLine)
 	and tool.cl.lines[tool.cl.linePool.slot["w" .. DBG.sw.id .. ">" .. DBG.g2.id]] == wireLine)
+local STILL = {}
+-- the colour the tool last gave the switch > g2 wire
+local function lineColor()
+	local pool = tool.cl.linePool
+	local i = pool.slot["w" .. DBG.sw.id .. ">" .. DBG.g2.id]
+	return i and tostring(pool.state[i].color) or "none"
+end
+step("lines: still frames", function()
+	tool:client_onUpdate(0.016)
+	STILL.asks, STILL.moves = SHAPE_ASKS, POOL_MOVES(tool)
+	tool:client_onUpdate(0.016) tool:client_onUpdate(0.016)
+	STILL.asks, STILL.moves = SHAPE_ASKS - STILL.asks, POOL_MOVES(tool) - STILL.moves
+end)
+check("lines: a still frame asks the game for no part positions", STILL.asks == 0 and STILL.moves == 0, STILL.asks)
+check("lines: and the wire is still shown", SHOWN(wireLine))
+step("lines: the switch turns on", function()
+	STILL.offColor = lineColor()
+	DBG.sw.on = true
+	STILL.asks = SHAPE_ASKS
+	tool:client_onUpdate(0.016)
+	STILL.asks = SHAPE_ASKS - STILL.asks
+	STILL.onColor = lineColor()
+	DBG.sw.on = nil
+	tool:client_onUpdate(0.016)
+	STILL.offAgain = lineColor()
+end)
+check("lines: a part turning on recolours its wires on a still frame", STILL.offColor == "7a1010ff" and STILL.onColor == "ff2a2aff"
+	and STILL.offAgain == "7a1010ff" and STILL.asks == 0, STILL.offColor .. " " .. STILL.onColor .. " " .. STILL.offAgain)
+step("lines: the creation moves", function()
+	STILL.before = wireLine.moves or 0
+	local b = DBG.sw.shape.body
+	b.worldPosition = vec(1, 0, 0)
+	for _, sh in ipairs(b.shapes) do sh.worldPosition = sh.worldPosition + vec(1, 0, 0) end
+	tool:client_onUpdate(0.016)
+	b.worldPosition = vec(0, 0, 0)
+	for _, sh in ipairs(b.shapes) do sh.worldPosition = sh.worldPosition - vec(1, 0, 0) end
+	tool:client_onUpdate(0.016)
+end)
+check("lines: when the creation moves the lines follow", (wireLine.moves or 0) >= STILL.before + 2, (wireLine.moves or 0) - STILL.before)
 local BIG = {}
+-- read the looked-at creation to the end, as many frames as it takes
+local function readAll()
+	for _ = 1, 100 do
+		tool.cl.scanLeft = 300
+		tool:cl_scanStep()
+		if not tool.cl.scan.work then return end
+	end
+end
 local function wireKeys()
-	tool.cl.allWires.frames = 0
+	readAll()
 	local set, n = {}, 0
 	for _, w in ipairs(tool:cl_allWires()) do set[w[1].id .. ">" .. w[2].id] = true n = n + 1 end
 	return set, n
@@ -1240,10 +1297,20 @@ step("lines: a creation with more wires than the limit", function()
 		BIG[i] = g
 	end
 	BIG.look, BIG.cam = tool.cl.lookShape, CAM.pos
+	BIG.version = tool.cl.scan.version
 	tool.cl.lookShape = BIG[1]:getShape()
 	CAM.pos = vec(87.5, 8, 0) -- the middle: the cut falls on both sides
 	tool.cl.allWires = nil
+	tool.cl.scanLeft = 300
+	tool:cl_scanStep()
+	BIG.partway = tool.cl.scan.work ~= nil and tool.cl.scan.version == BIG.version and #tool.cl.scan.work.parts == 300
+	readAll()
+	BIG.readDone = tool.cl.scan.work == nil and tool.cl.scan.version == BIG.version + 1 and #tool.cl.scan.ready.parts == 700
 	tool:cl_allWires()
+	BIG.reads = READS
+	tool.cl.scanLeft = 300
+	tool:cl_allWires() tool:cl_allWires()
+	BIG.stillReads = READS - BIG.reads
 	BIG.first, BIG.n = wireKeys()
 	BIG.still = wireKeys()
 	CAM.pos = vec(88.5, 8, 0)
@@ -1251,8 +1318,6 @@ step("lines: a creation with more wires than the limit", function()
 	CAM.pos = vec(175, 8, 0)
 	BIG.far = wireKeys()
 	tool:cl_onMaxWiresChanged(nil, "100")
-	tool.cl.allWires = nil
-	tool:cl_allWires()
 	BIG.few = select(2, wireKeys())
 	tool:cl_onMaxWiresChanged(nil, "abc")
 	BIG.bad = tool:cl_maxWires()
@@ -1263,8 +1328,11 @@ step("lines: a creation with more wires than the limit", function()
 	tool:cl_onMaxWiresChanged(nil, "500")
 	tool.cl.lookShape, CAM.pos, tool.cl.allWires = BIG.look, BIG.cam, nil
 end)
-check("lines: over the limit, 500 wires drawn", BIG.n == 500, BIG.n)
-check("wire lines: the box sets how many are drawn", BIG.few == 100, BIG.few)
+check("read: a big creation is read 300 parts a frame", BIG.partway)
+check("read: done after enough frames, the old read used until then", BIG.readDone)
+check("read: a still frame asks the game nothing", BIG.stillReads == 0, BIG.stillReads)
+check("lines: over the limit, up to 500 wires drawn (whole cells)", BIG.n <= 500 and BIG.n >= 450, BIG.n)
+check("wire lines: the box sets how many are drawn", BIG.few <= 100 and BIG.few >= 80, BIG.few)
 check("wire lines: not a number, 0 or too many keeps it sane", BIG.bad == 500 and BIG.zero == 500 and BIG.top == 5000)
 check("lines: over the limit, standing still keeps the same wires", sameKeys(BIG.first, BIG.still))
 check("lines: over the limit, a small move keeps the same wires", sameKeys(BIG.first, BIG.moved))
@@ -1421,8 +1489,17 @@ check("dots: every part keeps its own dot when the aim moves", (function()
 	return tool.cl.wireAim == DR.g2 and dotsShown() == 3
 end)())
 local setsBefore
-step("dots: a still frame", function() frame(DR.g2) setsBefore = POOL_MOVES(tool) frame(DR.g2) end)
-check("dots: a still frame tells the effects nothing", POOL_MOVES(tool) == setsBefore, POOL_MOVES(tool) - setsBefore)
+local asksBefore
+step("dots: a still frame", function()
+	frame(DR.g2) setsBefore = POOL_MOVES(tool) frame(DR.g2)
+	setsBefore = POOL_MOVES(tool) - setsBefore
+	frame(nil) -- aiming at nothing: the nearest dot is found from the saved positions
+	asksBefore = SHAPE_ASKS frame(nil)
+	asksBefore = SHAPE_ASKS - asksBefore
+	frame(DR.g2)
+end)
+check("dots: a still frame tells the effects nothing", setsBefore == 0, setsBefore)
+check("dots: a still frame asks the game for no part positions", asksBefore == 0, asksBefore)
 step("dots: back to the switch", function() frame(DR.sw) end)
 step("drag: switch to g1", function() drag(DR.sw, DR.g1) end)
 check("drag: wired, source dropped", #DR.sw.children == 1 and DR.sw.children[1] == DR.g1 and tool.cl.wireSource == nil)
