@@ -1,5 +1,7 @@
 # TobyWand
 
+![TobyWand](TobyWand/preview.png)
+
 A handheld logic tool for Scrap Mechanic, made for building **vanilla** logic
 creations faster.
 
@@ -93,9 +95,17 @@ The tests remove the globals the game's sandbox doesn't have (`setmetatable`,
 
 ## Install
 
-Copy `TobyWand/` into
+**Steam Workshop:** [subscribe here](https://steamcommunity.com/sharedfiles/filedetails/?id=3842490943), and Steam keeps it
+up to date.
+
+**By hand:** copy `TobyWand/` into
 `%APPDATA%/Axolot Games/Scrap Mechanic/User/User_<id>/Mods/`. If you update an
 installed copy, delete its `Cache` folder.
 
 Settings and saved scripts are kept next to the mod, in `settings.json` and
 `scripts.json`; keep those two files when you update.
+
+## License
+
+[MIT](LICENSE): use, change and share it freely, as long as the
+license and copyright notice stay with it.

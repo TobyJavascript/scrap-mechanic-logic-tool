@@ -171,7 +171,9 @@
 			a.className = "status";
 			a.id = "version";
 			a.href = "https://github.com/" + REPO + "/releases/tag/" + encodeURIComponent(tag);
-			a.textContent = "In development \u00B7 " + tag;
+			// 1.0 and up is a release; 0.x tags are still in development
+			var major = /^v?(\d+)\./.exec(tag);
+			a.textContent = major && +major[1] >= 1 ? "Latest release \u00B7 " + tag : "In development \u00B7 " + tag;
 			badge.replaceWith(a);
 		}
 		function newest(tags) {

@@ -2,8 +2,9 @@
 	"allow_add_mods": true,
 	"custom_icons": true,
 	"description": "TobyWand (by TobyWan): select logic parts in groups (A, B, C), connect them many at a time (all-to-all, zip, chain), wire them with Lua scripts, turn truth tables into LUTs, and see timing (min/max ticks from inputs to outputs), loops, glitch risks and truth tables.",
+	"fileId": 3842490943,
 	"localId": "e16b1dac-dd91-458d-a6fb-ea890752d378",
 	"name": "TobyWand",
 	"type": "Blocks and Parts",
-	"version": 1
+	"version": 2
 }
